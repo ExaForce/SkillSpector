@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from dataclasses import replace
 from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
@@ -87,18 +88,16 @@ class MetaAnalyzerFinding(BaseModel):
     remediation: str = Field(default="", description="How to fix the issue (actionable steps)")
 
 
-class OverallAssessment(BaseModel):
-    """Overall risk assessment for the analyzed file."""
-
-    risk_level: str = Field(description="Overall risk level: LOW, MEDIUM, HIGH, or CRITICAL")
-    summary: str = Field(description="Brief summary of findings")
-
-
 class MetaAnalyzerResult(BaseModel):
-    """Top-level structured response from the meta-analyzer LLM."""
+    """Top-level structured response from the meta-analyzer LLM.
+
+    Only ``findings`` is modelled: it is the sole field the node consumes. A
+    smaller required output is also less likely to truncate, which matters for
+    the served-model reliability the structured-output retry/batching machinery
+    targets.
+    """
 
     findings: list[MetaAnalyzerFinding] = Field(default_factory=list)
-    overall_assessment: OverallAssessment | None = None
 
     @field_validator("findings", mode="before")
     @classmethod
@@ -110,17 +109,6 @@ class MetaAnalyzerResult(BaseModel):
             except (json.JSONDecodeError, TypeError):
                 return []
             return parsed if isinstance(parsed, list) else []
-        return v
-
-    @field_validator("overall_assessment", mode="before")
-    @classmethod
-    def _parse_stringified_assessment(cls, v: object) -> object:
-        """LLMs sometimes return nested objects as JSON strings."""
-        if isinstance(v, str):
-            try:
-                return json.loads(v)
-            except (json.JSONDecodeError, TypeError):
-                return None
         return v
 
 
@@ -218,6 +206,33 @@ def _format_findings_for_prompt(findings: list[Finding]) -> str:
     return "\n".join(lines)
 
 
+def _fallback_finding(f: Finding) -> Finding:
+    """Pass *f* through unchanged but with a default remediation, no LLM enrichment.
+
+    Used on the fail-closed paths (LLM unavailable or failed) to preserve a
+    finding rather than silently dropping an unreviewed one.
+    """
+    return Finding(
+        rule_id=f.rule_id,
+        message=f.message,
+        severity=f.severity,
+        confidence=f.confidence,
+        file=f.file,
+        start_line=f.start_line,
+        end_line=f.end_line,
+        remediation=f.remediation or get_remediation(f.rule_id),
+        tags=f.tags,
+        context=f.context,
+        matched_text=f.matched_text,
+        category=getattr(f, "category", None),
+        pattern=getattr(f, "pattern", None),
+        finding=getattr(f, "finding", None),
+        explanation=getattr(f, "explanation", None),
+        code_snippet=getattr(f, "code_snippet", None) or f.context,
+        intent=None,
+    )
+
+
 _NO_LLM_CONFIDENCE_THRESHOLD = 0.4
 _HIGH_SEVERITY_PASS_THROUGH = frozenset({"CRITICAL", "HIGH"})
 _CODE_EXAMPLE_DOWNWEIGHT = 0.5
@@ -282,33 +297,25 @@ def _passthrough_with_defaults(findings: list[Finding]) -> list[Finding]:
     through unchanged (except adding default remediations). A security tool
     should fail-closed — showing more findings is safer than silently dropping.
     """
-    return [
-        Finding(
-            rule_id=f.rule_id,
-            message=f.message,
-            severity=f.severity,
-            confidence=f.confidence,
-            file=f.file,
-            start_line=f.start_line,
-            end_line=f.end_line,
-            remediation=f.remediation or get_remediation(f.rule_id),
-            tags=f.tags,
-            context=f.context,
-            matched_text=f.matched_text,
-            category=getattr(f, "category", None),
-            pattern=getattr(f, "pattern", None),
-            finding=getattr(f, "finding", None),
-            explanation=getattr(f, "explanation", None),
-            code_snippet=getattr(f, "code_snippet", None) or f.context,
-            intent=None,
-        )
-        for f in findings
-    ]
+    return [_fallback_finding(f) for f in findings]
 
 
 # ---------------------------------------------------------------------------
 # LLMMetaAnalyzer (filter / enrich mode)
 # ---------------------------------------------------------------------------
+
+
+# Max findings enriched per LLM call. Served models are unreliable producing a
+# large structured result in one tool call: on big outputs they either emit no
+# tool call at all, or stringify the findings array and truncate that string
+# (unparseable). Smaller batches keep the result short enough to complete
+# reliably (observed: 90→none, 10→occasional truncation, small→reliable).
+# A batch that still fails after retries is skipped individually (run loops
+# don't abort on one failure) and its findings are preserved un-enriched by the
+# node's fallback path, so more batches no longer means a higher chance of
+# losing the whole pass — 10 balances per-call reliability against re-sent input
+# cost (each batch re-sends the file content; see the cost note in get_batches).
+_MAX_FINDINGS_PER_BATCH = 10
 
 
 class LLMMetaAnalyzer(LLMAnalyzerBase):
@@ -322,6 +329,40 @@ class LLMMetaAnalyzer(LLMAnalyzerBase):
 
     def __init__(self, model: str):
         super().__init__(base_prompt=PER_FILE_ANALYSIS_PROMPT, model=model)
+
+    def get_batches(
+        self,
+        file_paths: list[str],
+        file_cache: dict[str, str],
+        findings: list[Finding] | None = None,
+    ) -> list[Batch]:
+        """Split each file's findings into groups of ``_MAX_FINDINGS_PER_BATCH``.
+
+        The base batcher splits by *input* size, so a file with many static
+        findings becomes one call that must emit a large tool-call result. Served
+        models can't reliably produce a big structured result in one shot — they
+        return no tool call at all on very large outputs. Bounding findings per
+        call keeps each tool call small and reliable; ``apply_filter`` re-merges
+        across batches by (file, rule_id, line).
+
+        Cost note: each sub-batch re-sends the full file content and prompt, so
+        a file with N findings costs ~ceil(N / _MAX_FINDINGS_PER_BATCH)x the
+        input tokens of a single call. _MAX_FINDINGS_PER_BATCH trades that
+        re-sent input against per-call output reliability.
+        """
+        batches = super().get_batches(file_paths, file_cache, findings)
+        bounded: list[Batch] = []
+        for batch in batches:
+            if len(batch.findings) <= _MAX_FINDINGS_PER_BATCH:
+                bounded.append(batch)
+                continue
+            for i in range(0, len(batch.findings), _MAX_FINDINGS_PER_BATCH):
+                # replace() carries every other Batch field forward, so a new
+                # field added to Batch isn't silently dropped for split batches.
+                bounded.append(
+                    replace(batch, findings=batch.findings[i : i + _MAX_FINDINGS_PER_BATCH])
+                )
+        return bounded
 
     def _estimate_extra_overhead(self, findings: list[Finding]) -> int:
         if not findings:
