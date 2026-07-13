@@ -24,7 +24,7 @@ CREATE TABLE runs (
     use_llm BOOLEAN,
     workers INTEGER,
     sample_limit INTEGER,
-    total_units INTEGER
+    description TEXT
 );
 CREATE TABLE units (
     run_id TEXT,
@@ -109,6 +109,11 @@ JOIN classifications c USING (run_id, unit_path);
 """
 
 
+# Every table keyed by run_id -- deleting a run means clearing its rows in all of
+# them (there is no FK cascade in the schema).
+_RUN_TABLES = ("runs", "units", "classifications", "issues", "components")
+
+
 def classification_status(res: ScanResult, no_llm: bool) -> str:
     """How SkillSpector produced this verdict (the user's status enum)."""
     if res.scan_status != "ok":
@@ -120,24 +125,60 @@ def classification_status(res: ScanResult, no_llm: bool) -> str:
     return "LLM"
 
 
-def open_db(path: pathlib.Path, resume: bool):
-    """Open the DuckDB file. Returns (con, run_id, done_unit_paths, resuming).
+def known_run_ids(con) -> list[str]:
+    """Every run_id in the DB, newest first -- for resolution and error messages."""
+    return [
+        r[0] for r in con.execute("SELECT run_id FROM runs ORDER BY started_at DESC").fetchall()
+    ]
 
-    Fresh: create the schema and a new run_id. Resume: reuse the existing
-    run_id (so the result set stays coherent) and report which unit_paths were
-    already classified successfully, so they can be skipped.
+
+def resolve_run_id(con, ref: str) -> str:
+    """Resolve a run-id reference against the runs table: exact, else unique prefix.
+
+    Raises SystemExit (with the known ids) if the reference is unknown or matches
+    more than one run.
+    """
+    if con.execute("SELECT 1 FROM runs WHERE run_id = ? LIMIT 1", [ref]).fetchone():
+        return ref
+    known = known_run_ids(con)
+    matches = [r for r in known if r.startswith(ref)]
+    if len(matches) == 1:
+        return matches[0]
+    if not matches:
+        raise SystemExit(f"run id {ref!r} not found. known run ids: {known or '(none)'}")
+    raise SystemExit(f"run id {ref!r} is ambiguous; matches: {matches}")
+
+
+def open_db(path: pathlib.Path, run_id: str | None):
+    """Open the DuckDB file, creating the schema on first use.
+
+    Returns ``(con, done_unit_paths, extending)``.
+
+    ``run_id`` is None -> a new run: the schema is created if the file is new
+    (a new run is otherwise appended into an existing benchmark DB), and an
+    empty done-set is returned -- the caller assigns a fresh run_id and inserts
+    the ``runs`` row. ``run_id`` is set -> extend that run: it must already
+    exist in the file, and the set of unit_paths already classified cleanly is
+    returned so they are skipped.
     """
     import duckdb
 
     con = duckdb.connect(str(path))
-    if not resume:
-        con.execute(_SCHEMA)
-        con.execute(_EVAL_VIEW)
-        return con, None, set(), False
     tables = {r[0] for r in con.execute("SHOW TABLES").fetchall()}
     if "runs" not in tables:
-        raise SystemExit(f"{path} exists but isn't a benchmark DB. Use --overwrite to replace it.")
-    run_id = con.execute("SELECT run_id FROM runs ORDER BY started_at DESC LIMIT 1").fetchone()[0]
+        if run_id is not None:
+            raise SystemExit(
+                f"cannot extend run {run_id}: {path} has no benchmark results. "
+                "Omit --run-id to start a new run."
+            )
+        con.execute(_SCHEMA)
+        con.execute(_EVAL_VIEW)
+        return con, set(), False
+    if run_id is None:
+        return con, set(), False  # append a new run into the existing DB
+    if not con.execute("SELECT 1 FROM runs WHERE run_id = ? LIMIT 1", [run_id]).fetchone():
+        known = known_run_ids(con)
+        raise SystemExit(f"run id {run_id} not found in {path}. known run ids: {known or '(none)'}")
     done = {
         r[0]
         for r in con.execute(
@@ -145,7 +186,7 @@ def open_db(path: pathlib.Path, resume: bool):
             [run_id],
         ).fetchall()
     }
-    return con, run_id, done, True
+    return con, done, True
 
 
 def purge_incomplete(con, run_id: str) -> None:
@@ -169,6 +210,41 @@ def purge_incomplete(con, run_id: str) -> None:
             [run_id],
         )
     con.execute("DROP TABLE _purge")
+
+
+def run_row_counts(con, run_id: str) -> dict[str, int]:
+    """Rows attributable to ``run_id`` in each run-scoped table -- for the delete preview."""
+    return {
+        table: con.execute(
+            f"SELECT count(*) FROM {table} WHERE run_id = ?",  # noqa: S608 - fixed table names
+            [run_id],
+        ).fetchone()[0]
+        for table in _RUN_TABLES
+    }
+
+
+def delete_runs(con, run_ids: list[str]) -> None:
+    """Delete every row for the given ``run_ids`` across all run-scoped tables.
+
+    Runs in a single transaction so a batch delete is all-or-nothing. ``run_ids``
+    must be exact ids already resolved against the ``runs`` table; duplicates are
+    ignored and an empty list is a no-op.
+    """
+    ids = list(dict.fromkeys(run_ids))
+    if not ids:
+        return
+    placeholders = ",".join("?" * len(ids))
+    con.execute("BEGIN TRANSACTION")
+    try:
+        for table in _RUN_TABLES:
+            con.execute(
+                f"DELETE FROM {table} WHERE run_id IN ({placeholders})",  # noqa: S608 - fixed table names
+                ids,
+            )
+        con.execute("COMMIT")
+    except Exception:
+        con.execute("ROLLBACK")
+        raise
 
 
 def record_result(con, run_id: str, res: ScanResult, no_llm: bool) -> None:

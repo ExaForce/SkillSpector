@@ -20,6 +20,9 @@ means:
 
 ## Running
 
+Three console scripts: `benchmark` (scan), `report` (compare two runs), and
+`remove-run` (delete runs from a DB).
+
 From the repo root (no `cd` needed):
 
 ```bash
@@ -41,6 +44,24 @@ uv run benchmark .../Dataset --no-llm        # static analysis only
 > benchmark` execute the directory instead of the installed entry point. Invoke
 > it via the `benchmark` command (as above) or `.venv/bin/benchmark` directly.
 
+### Removing runs
+
+`remove-run` deletes runs from a DB — handy for pruning throwaway
+local-validation runs before you version the file. It takes the DB path and one
+or more run ids (a unique prefix is accepted), removes each run's rows across all
+of its tables, and confirms once before deleting (`--yes`/`-y` skips the prompt).
+Ids that don't resolve are skipped with a warning; the rest are shown with their
+row counts.
+
+```bash
+uv run remove-run results.duckdb <run_id> [<run_id> ...]
+uv run remove-run results.duckdb ab12 9f3 c7 --yes   # several at once, no prompt
+```
+
+> Note: `DELETE` clears the runs' data but does **not** shrink the `.db` file on
+> disk (DuckDB reuses the freed blocks internally); to reclaim file size, rewrite
+> the DB to a fresh file.
+
 ### Key flags
 
 | Flag | Meaning |
@@ -50,11 +71,39 @@ uv run benchmark .../Dataset --no-llm        # static analysis only
 | `--categories` | comma-separated unit categories to scan; default `skill,code`. **Prompts are excluded by default** — they're raw prompt-injection samples, not the repo config files this tool classifies (PI embedded in a skill is still covered via the `skill` units). Pass `--categories skill,code,prompt` to include them. |
 | `--limit N` | cap units **per group** — a unit's parent directory (e.g. `--limit 20` on `Dataset/Skills` keeps 20 from `Skills/malware` *and* 20 from `Skills/benign`); 0 = no cap |
 | `--workers N` | concurrent scan processes (default 8) |
-| `--overwrite` | start fresh instead of resuming an existing DB |
+| `--run-id` | extend an existing run instead of starting a new one (requires `-o`); re-scans only its unfinished units and appends into the same run |
+| `--from-run` | re-scan the units of a previous run instead of a `DATASET_PATH` (requires `-o`; reads that run from the `-o` DB and appends a new run there). Omit the positional path. |
+| `--failures-only` | with `--from-run`, re-scan only that run's **failed** units (FN, FP, timeouts, and errors) |
+| `--dataset` | with `--from-run`, override the source run's recorded dataset path (if the checkout moved) |
+| `--description` | free-text note stored on the run in the `runs` table |
+| `--overwrite` | delete the output DB before running (default: append a new run to it) |
 | `--auth-wait-seconds` | how long to pause for `aws sso login` on a mid-run SSO expiry |
 
-A run is **resumable**: re-running the same command against an existing output
-DB skips already-classified units and re-scans only failures.
+Every invocation is a **new run** by default (multiple runs coexist in one DB).
+To extend an interrupted run, re-run with `--run-id <id>` (printed when the run
+is created): already-classified units are skipped and only failures re-scanned.
+
+### Re-checking a previous run
+
+`--from-run` re-scans the units of an earlier run rather than rediscovering a
+dataset — `--failures-only` narrows that to the units that previously failed.
+The intended loop: scan a baseline, change the analyzer, re-check the failures,
+then `report` the two to see exactly which previously-failing units improved.
+
+```bash
+uv run benchmark /path/to/Dataset -o results.duckdb --description baseline   # 1. baseline
+#   ... make analyzer changes ...
+uv run benchmark --from-run <baseline_id> --failures-only -o results.duckdb \
+    --description "after fix"                                                 # 2. re-check failures
+uv run report results.duckdb <recheck_id> --base <baseline_id>               # 3. compare
+```
+
+> The unit *content* isn't stored in the DB (code/prompt units are materialized
+> at scan time), so `--from-run` rediscovers the source run's dataset and filters
+> to its unit_paths — the original checkout must still be on disk (or pass
+> `--dataset`). Comparing a failures-only re-check against its full baseline will
+> trip the report's coverage-skew warning; that's expected — the head-to-head
+> section is the view you want there.
 
 ## Output
 
@@ -98,11 +147,42 @@ CTE at the top to target a different run or span all of them.
 | `13_label_coverage.sql` | How ground-truth labels were resolved (bounds trust in 03/05) |
 | `14_top_rules.sql` | Which rules fire, on malicious vs benign (false-positive drivers) |
 
+## Comparing two runs (PR-ready report)
+
+The `report` command compares two runs in a DB and emits a markdown summary —
+headline metrics with deltas, per-dimension distributions (category, benign vs
+malicious, attack vector, behavior, …), timing, and an **outcome-transition**
+analysis (which units moved `FN→TP`, `TP→FN`, etc.) that quantifies whether a
+change actually helped. Visualize it locally, then paste it into a PR
+description to show the improvement. If the two runs scanned materially
+different sample sets, the report leads with a warning that the headline deltas
+aren't a controlled comparison (the head-to-head section is the like-for-like view).
+
+```bash
+uv run report <db_path> <candidate_run> --base <baseline_run> -o report.md
+```
+
+`db_path` is the DuckDB file containing all relevant runs. The positional `RUN`
+is the candidate (head); `--base` names the baseline. Omit `--base` for a
+single-run summary. Deltas are `head − base`. A unique run-id **prefix** is
+accepted. Output goes to stdout unless `-o` is given.
+
+| Flag | Meaning |
+|------|---------|
+| `--base` | baseline run id to compare `RUN` against (omit for a single-run summary) |
+| `-o, --output` | write the markdown to a file (default: stdout) |
+| `--label` | display name for `RUN` / head (default: the run's description or short id) |
+| `--base-label` | display name for the base run |
+| `--top N` | max regression / fix rows to list (default 25; the full counts are always shown) |
+
+> The output uses unicode bar charts + markdown tables, which render identically
+> in a GitHub PR description, a local markdown preview, and plain text.
+
 ## Layout
 
 ```
 benchmark/
-  main.py                  # argparse + run orchestration
+  main.py                  # click CLI: `benchmark` (scan) + `report` (compare) + `remove-run` (delete) console scripts
   config.py                # provider/run constants + parent-process env wiring
   models.py                # Unit, ScanResult
   auth.py                  # Bedrock bearer-token manager (cross-process cache)
@@ -113,6 +193,12 @@ benchmark/
     base.py                # DatasetHandler abstraction
     malskillbench.py       # MalSkillBench implementation
     __init__.py            # handler registry + discover() dispatch
+  report/                  # `report` command: compare two runs -> markdown
+    data.py                # per-run metrics out of DuckDB
+    compare.py             # deltas, coverage, outcome transitions
+    charts.py              # unicode bars + delta formatters (template filters)
+    render.py              # Jinja2 context assembly + render
+    templates/report.md.j2 # the report layout
 ```
 
 ## Adding another dataset

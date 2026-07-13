@@ -1,0 +1,72 @@
+# SkillSpector benchmark: `{{ label }}`
+
+<sub>Generated {{ generated_at }} from `{{ db_path }}`.</sub>
+
+## Run configuration
+
+| | `{{ label }}` |
+|---|---|
+| run id | `{{ run.run_id }}` |
+| description | {{ run.description or '—' }} |
+| model | {{ run.model or '—' }} |
+| LLM | {{ 'on' if run.use_llm else 'off' }} |
+| units (total) | {{ run.confusion.total | num }} |
+| started | {{ run.started_at.strftime('%Y-%m-%d %H:%M') if run.started_at else '—' }} |
+| workers | {{ run.workers | num }} |
+
+## Outcomes
+
+Every scanned unit is exactly one of these, so the rows **conserve to the total**.
+Read the two **bold** group rows for the headline; the indented rows break them down.
+
+| | count | % of total |
+|---|---|---|
+| ✅ **correct** (TP + TN) | {{ run.confusion.correct }} | {{ run.confusion.correct | pct(run.confusion.total) }} |
+| &emsp;true positives · malware caught | {{ run.confusion.tp }} | {{ run.confusion.tp | pct(run.confusion.total) }} |
+| &emsp;true negatives · benign passed | {{ run.confusion.tn }} | {{ run.confusion.tn | pct(run.confusion.total) }} |
+| 🔴 **incorrect** (FP + FN + errors) | {{ run.confusion.incorrect }} | {{ run.confusion.incorrect | pct(run.confusion.total) }} |
+| &emsp;false positives · benign flagged | {{ run.confusion.fp }} | {{ run.confusion.fp | pct(run.confusion.total) }} |
+| &emsp;false negatives · malware missed | {{ run.confusion.fn }} | {{ run.confusion.fn | pct(run.confusion.total) }} |
+| &emsp;errors / timeouts | {{ run.confusion.errors }} | {{ run.confusion.errors | pct(run.confusion.total) }} |
+| total scanned | {{ run.confusion.total }} | {{ run.confusion.total | pct(run.confusion.total) }} |
+
+Overall correctness (correct ÷ scanned, errors counted as wrong): **{{ run.confusion.correctness | metric }}**.
+
+## Detection quality
+
+Rates over units that **produced a verdict** (errors excluded — scored {{ run.confusion.scored }} of {{ run.confusion.total }}).
+
+| metric | value |
+|---|---|
+| precision | {{ run.confusion.precision | metric }} `{{ run.confusion.precision | bar(1.0) }}` |
+| recall | {{ run.confusion.recall | metric }} `{{ run.confusion.recall | bar(1.0) }}` |
+| F1 | {{ run.confusion.f1 | metric }} `{{ run.confusion.f1 | bar(1.0) }}` |
+| accuracy | {{ run.confusion.accuracy | metric }} `{{ run.confusion.accuracy | bar(1.0) }}` |
+
+## Timing
+
+Per-scan `run_time` stats. **Total scan time** is the sum (total work across all
+scans) — resume-safe, unlike `finished_at − started_at`. **~est. wall** divides
+that by the run's worker count to approximate elapsed time; it's an *estimate*
+(ignores ramp-up, the under-saturated tail, and auth pauses, so it runs low).
+
+| scans | avg | median | p95 | max | total scan time | ~est. wall |
+|---|---|---|---|---|---|---|
+| {{ run.timing.scans }} | {{ run.timing.avg_s | num }}s | {{ run.timing.median_s | num }}s | {{ run.timing.p95_s | num }}s | {{ run.timing.max_s | num }}s | {{ run.timing.total_cpu_s | duration }} | {{ run.est_wall_s | duration }} |
+
+## Distributions
+
+Per-dimension breakdown: sample size (`n`), false positives, false negatives, and recall. Recall is `—` where a group has no malicious units.
+
+{% for dim in dimensions %}
+<details>
+<summary>By {{ dim.replace('_', ' ') }}</summary>
+
+| {{ dim.replace('_', ' ') }} | n | FP | FN | recall |
+|---|---|---|---|---|
+{% for row in run.dists[dim] %}
+| {{ row.key }} | {{ row.n }} `{{ row.n | bar(run.confusion.total) }}` | {{ row.fp }} | {{ row.fn }} | {{ row.recall | metric }} |
+{% endfor %}
+</details>
+
+{% endfor %}

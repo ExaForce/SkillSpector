@@ -1,0 +1,120 @@
+{% macro moved_table(items, n_total) %}
+
+| unit | base → head | type | malware |
+|---|---|---|---|
+{% for m in items %}
+| `{{ m.unit_path }}` | {{ m.base_outcome }} → {{ m.head_outcome }} | {{ m.category }} / {{ 'malicious' if m.truth_malicious else 'benign' }} | {{ (m.attack_vector or '') ~ (' ' ~ m.behavior if m.behavior else '') or '—' }} |
+{% endfor %}
+{% if items | length < n_total %}
+
+<sub>… {{ n_total - (items | length) }} more not shown (raise `--top`).</sub>
+{% endif %}
+{% endmacro %}
+{% set net = cmp.fixed - cmp.regressed %}
+# SkillSpector benchmark: `{{ label_base }}` → `{{ label_head }}`
+
+{% if coverage_skewed %}
+> [!WARNING]
+> These runs scanned **different sample sets** — {{ cmp.coverage.only_base }} unit(s) only in base, {{ cmp.coverage.only_head }} only in head, {{ cmp.coverage.both }} shared. The Outcomes and quality numbers below are each over a run's **full** set, so their deltas partly reflect *which* units each run scanned, not just classifier changes — treat them as indicative, not controlled. The **Head-to-head** section (shared units only) is the apples-to-apples view.
+
+{% endif %}
+{% if net > 0 %}🟢 **Net +{{ net }}** classifications improved{% elif net < 0 %}🔴 **Net {{ net }}** classifications regressed{% else %}⚪ **No net change** in classifications{% endif %} over the {{ cmp.coverage.both }} unit(s) both runs scanned — {{ cmp.fixed }} fixed, {{ cmp.regressed }} regressed.
+
+<sub>base = baseline, head = candidate. Δ = head − base; ▲ better, ▼ worse. Generated {{ generated_at }} from `{{ db_path }}`.</sub>
+
+## Run configuration
+
+| | base · `{{ label_base }}` | head · `{{ label_head }}` |
+|---|---|---|
+| run id | `{{ base.run_id }}` | `{{ head.run_id }}` |
+| description | {{ base.description or '—' }} | {{ head.description or '—' }} |
+| model | {{ base.model or '—' }} | {{ head.model or '—' }} |
+| LLM | {{ 'on' if base.use_llm else 'off' }} | {{ 'on' if head.use_llm else 'off' }} |
+| units (total) | {{ base.confusion.total | num }} | {{ head.confusion.total | num }} |
+| started | {{ base.started_at.strftime('%Y-%m-%d %H:%M') if base.started_at else '—' }} | {{ head.started_at.strftime('%Y-%m-%d %H:%M') if head.started_at else '—' }} |
+| workers | {{ base.workers | num }} | {{ head.workers | num }} |
+
+## Outcomes
+
+Every scanned unit is exactly one of these, so the rows **conserve to the total** —
+reducing one bucket (e.g. eliminating timeouts) just moves those units into the
+others. Read the two **bold** group rows for the verdict; the indented rows break
+them down (a single sub-row moving isn't independently good or bad).
+
+| | base | head | Δ |
+|---|---|---|---|
+| ✅ **correct** (TP + TN) | {{ base.confusion.correct }} | {{ head.confusion.correct }} | {{ (head.confusion.correct - base.confusion.correct) | delta(as_int=true) }} |
+| &emsp;true positives · malware caught | {{ base.confusion.tp }} | {{ head.confusion.tp }} | {{ (head.confusion.tp - base.confusion.tp) | signed }} |
+| &emsp;true negatives · benign passed | {{ base.confusion.tn }} | {{ head.confusion.tn }} | {{ (head.confusion.tn - base.confusion.tn) | signed }} |
+| 🔴 **incorrect** (FP + FN + errors) | {{ base.confusion.incorrect }} | {{ head.confusion.incorrect }} | {{ (head.confusion.incorrect - base.confusion.incorrect) | delta(higher_is_better=false, as_int=true) }} |
+| &emsp;false positives · benign flagged | {{ base.confusion.fp }} | {{ head.confusion.fp }} | {{ (head.confusion.fp - base.confusion.fp) | signed }} |
+| &emsp;false negatives · malware missed | {{ base.confusion.fn }} | {{ head.confusion.fn }} | {{ (head.confusion.fn - base.confusion.fn) | signed }} |
+| &emsp;errors / timeouts | {{ base.confusion.errors }} | {{ head.confusion.errors }} | {{ (head.confusion.errors - base.confusion.errors) | signed }} |
+| total scanned | {{ base.confusion.total }} | {{ head.confusion.total }} | {{ (head.confusion.total - base.confusion.total) | signed }} |
+
+Overall correctness (correct ÷ scanned, errors counted as wrong): **{{ base.confusion.correctness | metric }}** → **{{ head.confusion.correctness | metric }}** ({{ (head.confusion.correctness | sub(base.confusion.correctness)) | delta }}).
+
+## Detection quality
+
+Rates over units that **produced a verdict** (errors excluded — base scored {{ base.confusion.scored }}, head scored {{ head.confusion.scored }}). When the two runs' error counts differ these are **not** a like-for-like comparison — use **Outcomes** above for the conserved view.
+
+| metric | base | head | Δ |
+|---|---|---|---|
+| precision | {{ base.confusion.precision | metric }} `{{ base.confusion.precision | bar(1.0) }}` | {{ head.confusion.precision | metric }} `{{ head.confusion.precision | bar(1.0) }}` | {{ (head.confusion.precision | sub(base.confusion.precision)) | delta }} |
+| recall | {{ base.confusion.recall | metric }} `{{ base.confusion.recall | bar(1.0) }}` | {{ head.confusion.recall | metric }} `{{ head.confusion.recall | bar(1.0) }}` | {{ (head.confusion.recall | sub(base.confusion.recall)) | delta }} |
+| F1 | {{ base.confusion.f1 | metric }} `{{ base.confusion.f1 | bar(1.0) }}` | {{ head.confusion.f1 | metric }} `{{ head.confusion.f1 | bar(1.0) }}` | {{ (head.confusion.f1 | sub(base.confusion.f1)) | delta }} |
+
+## Head-to-head: what moved
+
+Over the **{{ cmp.coverage.both }}** unit(s) scanned by both runs{% if cmp.coverage.only_base or cmp.coverage.only_head %} (base-only: {{ cmp.coverage.only_base }}, head-only: {{ cmp.coverage.only_head }} — excluded from this section){% endif %}:
+
+- 🟢 **{{ cmp.fixed }} fixed** (FN→TP, FP→TN, or error→resolved)
+- 🔴 **{{ cmp.regressed }} regressed** (TP→FN, TN→FP, or →error)
+{% if cmp.other_moves %}
+- ⚪ **{{ cmp.unchanged }} unchanged**, {{ cmp.other_moves }} other moves
+{% else %}
+- ⚪ **{{ cmp.unchanged }} unchanged**
+{% endif %}
+
+{% if cmp.n_regressions %}
+<details{% if cmp.regressions | length >= cmp.n_regressions %} open{% endif %}>
+<summary>🔴 Regressions ({{ cmp.n_regressions }}){% if cmp.regressions | length < cmp.n_regressions %} — showing first {{ cmp.regressions | length }}{% endif %}</summary>
+{{ moved_table(cmp.regressions, cmp.n_regressions) }}
+</details>
+{% endif %}
+
+{% if cmp.n_fixes %}
+<details>
+<summary>🟢 Fixes ({{ cmp.n_fixes }}){% if cmp.fixes | length < cmp.n_fixes %} — showing first {{ cmp.fixes | length }}{% endif %}</summary>
+{{ moved_table(cmp.fixes, cmp.n_fixes) }}
+</details>
+{% endif %}
+
+## Timing
+
+Per-scan `run_time` stats. **Total scan time** is the sum (total work across all
+scans) — resume-safe, unlike `finished_at − started_at`. **~est. wall** divides
+that by the run's worker count to approximate elapsed time; it's an *estimate*
+(ignores ramp-up, the under-saturated tail, and auth pauses, so it runs low).
+
+| | scans | avg | median | p95 | max | total scan time | ~est. wall |
+|---|---|---|---|---|---|---|---|
+| **base** | {{ base.timing.scans }} | {{ base.timing.avg_s | num }}s | {{ base.timing.median_s | num }}s | {{ base.timing.p95_s | num }}s | {{ base.timing.max_s | num }}s | {{ base.timing.total_cpu_s | duration }} | {{ base.est_wall_s | duration }} |
+| **head** | {{ head.timing.scans }} | {{ head.timing.avg_s | num }}s | {{ head.timing.median_s | num }}s | {{ head.timing.p95_s | num }}s | {{ head.timing.max_s | num }}s | {{ head.timing.total_cpu_s | duration }} | {{ head.est_wall_s | duration }} |
+
+## Distributions
+
+Per-dimension breakdown across both runs: sample size (`n`), false positives, false negatives, and recall. Recall is `—` where a group has no malicious units.
+
+{% for dim in dimensions %}
+<details>
+<summary>By {{ dim.replace('_', ' ') }}</summary>
+
+| {{ dim.replace('_', ' ') }} | base n | head n | base FP | head FP | base FN | head FN | base recall | head recall |
+|---|---|---|---|---|---|---|---|---|
+{% for row in merged[dim] %}
+| {{ row.key }} | {{ row.base.n if row.base else 0 }} `{{ (row.base.n if row.base else 0) | bar(base.confusion.total) }}` | {{ row.head.n if row.head else 0 }} `{{ (row.head.n if row.head else 0) | bar(head.confusion.total) }}` | {{ row.base.fp if row.base else 0 }} | {{ row.head.fp if row.head else 0 }} | {{ row.base.fn if row.base else 0 }} | {{ row.head.fn if row.head else 0 }} | {{ (row.base.recall if row.base else none) | metric }} | {{ (row.head.recall if row.head else none) | metric }} |
+{% endfor %}
+</details>
+
+{% endfor %}

@@ -6,7 +6,7 @@ import os
 
 from .auth import token_manager
 
-BEDROCK_BASE_URL = "https://bedrock-mantle.us-east-2.api.aws/v1"
+BEDROCK_BASE_URL_TEMPLATE = "https://bedrock-mantle.{region}.api.aws/v1"
 BEDROCK_REGION = "us-east-2"
 PROVIDER = "openai"
 MODEL_ID = "nvidia.nemotron-super-3-120b"
@@ -14,6 +14,16 @@ SCAN_TIMEOUT_SECONDS = 300
 
 # SkillSpector's own "do not install" verdict == this recommendation string.
 MALICIOUS_RECOMMENDATION = "DO_NOT_INSTALL"
+
+
+def bedrock_base_url(region: str) -> str:
+    """Bedrock endpoint for ``region`` (keeps the URL in sync with an
+    ``AWS_REGION`` override, which also drives the minted token's region).
+
+    An explicit ``BEDROCK_BASE_URL`` env var wins as an escape hatch, for a
+    region whose host doesn't follow the ``bedrock-mantle.<region>`` pattern.
+    """
+    return os.environ.get("BEDROCK_BASE_URL") or BEDROCK_BASE_URL_TEMPLATE.format(region=region)
 
 
 def configure_run(no_llm: bool, timeout: float) -> tuple[dict, str, str, str]:
@@ -56,6 +66,6 @@ def configure_run(no_llm: bool, timeout: float) -> tuple[dict, str, str, str]:
         ) from e
     os.environ["SKILLSPECTOR_PROVIDER"] = PROVIDER
     os.environ["SKILLSPECTOR_MODEL"] = model
-    os.environ["OPENAI_BASE_URL"] = BEDROCK_BASE_URL
+    os.environ["OPENAI_BASE_URL"] = bedrock_base_url(region)
     cfg.update(mint_bedrock=True, region=region)
     return cfg, PROVIDER, model, region
