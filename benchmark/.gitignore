@@ -4,3 +4,8 @@
 __pycache__/
 # DuckDB result files written by the harness (benchmark_<id>.duckdb, -o targets).
 *.duckdb
+*.db
+# Local report / stats output from the `report` command and ad-hoc runs.
+*_report.md
+report.md
+batch_stats.*

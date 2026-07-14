@@ -15,7 +15,7 @@ SELECT
     r.run_id,
     r.model,
     r.use_llm,
-    r.total_units,
+    coalesce(m.tp + m.fp + m.tn + m.fn + m.errors, 0) AS total_units,  -- derived; runs has no stored count
     r.started_at,
     date_diff('second', r.started_at, r.finished_at) AS duration_s,
     m.tp, m.fp, m.tn, m.fn, m.errors,

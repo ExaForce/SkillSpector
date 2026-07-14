@@ -37,6 +37,35 @@ _CATEGORIES = ("Skills", "Codes", "Prompts", "MCPs")
 # JSON files that are corpus metadata / indexes rather than samples.
 _SKIP_JSON = frozenset({"knowledge_base.json", "_classified.json", "_deduped.json"})
 
+# Human-readable names for the MalSkillBench B1-B15 behavior taxonomy (from
+# Core/taxonomy/behaviors.py), stored on the unit's ``behavior`` so the DB and
+# report read in plain language.
+BEHAVIOR_NAMES = {
+    "B1": "Data Exfiltration",
+    "B2": "Credential Theft",
+    "B3": "Remote Code Execution",
+    "B4": "Malware Delivery",
+    "B5": "Persistence",
+    "B6": "Reverse Shell",
+    "B7": "Ransomware",
+    "B8": "Resource Abuse",
+    "B9": "Privilege Escalation",
+    "B10": "Role Hijack",
+    "B11": "Safety Bypass",
+    "B12": "Instruction Override",
+    "B13": "System Prompt Leak",
+    "B14": "Goal Hijacking",
+    "B15": "Content Manipulation",
+}
+
+
+def _behavior_name(code: str | None) -> str | None:
+    """Map a behavior code (B1..B15) to its human name; pass through None/unknown."""
+    if not code:
+        return None
+    return BEHAVIOR_NAMES.get(code, code)
+
+
 # Keys we try, in order, to pull a prompt body out of a heterogeneous record.
 _PROMPT_TEXT_KEYS = (
     "text",
@@ -260,7 +289,7 @@ def _label_malware_skill(unit: Unit, dir_name: str, labels: LabelStore) -> None:
     inv = labels.inventory.get(dir_name)
     if inv:
         unit.attack_vector = inv["attack_vector"]
-        unit.behavior = inv["behavior"]
+        unit.behavior = _behavior_name(inv["behavior"])
         unit.insertion_strategy = inv["insertion_strategy"]
         unit.sample_type = inv["sample_type"]
         unit.label = canonical_label(inv["attack_vector"], inv["behavior"])
@@ -268,7 +297,7 @@ def _label_malware_skill(unit: Unit, dir_name: str, labels: LabelStore) -> None:
         return
     parsed = _parse_skill_labels(dir_name)
     unit.attack_vector = parsed["attack_vector"]
-    unit.behavior = parsed["behavior"]
+    unit.behavior = _behavior_name(parsed["behavior"])
     unit.insertion_strategy = parsed["insertion_strategy"]
     guess = canonical_label(parsed["attack_vector"], parsed["behavior"])
     if guess:
@@ -305,7 +334,7 @@ def collect_codes(root: pathlib.Path, anchor: pathlib.Path, labels: LabelStore) 
                     display_name=f"{f.stem}:{pyfile}",
                     is_malicious=True,
                     attack_vector="CI",
-                    behavior=behavior,
+                    behavior=_behavior_name(behavior),
                     label=canonical_label("CI", behavior),
                     label_source="classified" if behavior else "corpus",
                     corpus=f.parent.name,
@@ -378,7 +407,7 @@ def _build_prompt_unit(unit_path, source_path, stem, idx, text, rec, source, cor
         display_name=f"{stem}#{idx}",
         is_malicious=malicious,
         attack_vector="PI",
-        behavior=behavior if malicious else None,
+        behavior=_behavior_name(behavior) if malicious else None,
         label_source=label_source,
         corpus=corpus,
         materialize={"SKILL.md": _as_skill_md(stem, text)},

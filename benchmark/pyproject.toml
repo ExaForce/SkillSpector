@@ -10,14 +10,21 @@ readme = "README.md"
 requires-python = ">=3.12,<3.15"
 dependencies = [
     "skillspector",
+    "click>=8.1.7",
     "tqdm>=4.67.3",
     "duckdb>=1.5.4",
     "filelock>=3.24.3",
     "aws-bedrock-token-generator>=1.1.0",
+    "jinja2>=3.1.6",
 ]
 
 [project.scripts]
-benchmark = "benchmark.main:main"
+benchmark = "benchmark.main:run"
+report = "benchmark.main:report"
+remove-run = "benchmark.main:remove_run"
+
+[dependency-groups]
+dev = ["pytest>=8"]
 
 # skillspector is resolved from the parent repo as an editable install, NOT from
 # PyPI. `editable = true` is load-bearing: drop it and the harness runs against a
