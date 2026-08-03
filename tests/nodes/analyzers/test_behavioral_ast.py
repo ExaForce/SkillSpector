@@ -233,6 +233,46 @@ class TestEdgeCases:
         result = behavioral_ast.node(state)
         assert result["findings"] == []
 
+    def test_file_size_gate_scans_exact_character_limit(self):
+        from skillspector.nodes.analyzers.static_runner import MAX_FILE_CHARS
+
+        prefix = 'exec("x")\n'
+        code = prefix + (" " * (MAX_FILE_CHARS - len(prefix)))
+        assert len(code) == MAX_FILE_CHARS
+        assert any(f.rule_id == "AST1" for f in _run(code))
+
+    def test_file_size_gate_skips_over_character_limit(self):
+        from skillspector.nodes.analyzers.static_runner import MAX_FILE_CHARS
+
+        prefix = 'exec("x")\n'
+        code = prefix + (" " * (MAX_FILE_CHARS - len(prefix) + 1))
+        assert len(code) == MAX_FILE_CHARS + 1
+        assert _run(code) == []
+
+    def test_file_size_gate_multibyte_under_character_limit_scanned(self):
+        from skillspector.nodes.analyzers.static_runner import MAX_FILE_CHARS
+
+        prefix = 'exec("x")\n# '
+        code = prefix + ("🦄" * 250_000)
+        assert len(code) <= MAX_FILE_CHARS
+        assert len(code.encode("utf-8")) > MAX_FILE_CHARS
+        assert any(f.rule_id == "AST1" for f in _run(code))
+
+    def test_file_size_gate_skips_only_oversized_component(self):
+        from skillspector.nodes.analyzers.static_runner import MAX_FILE_CHARS
+
+        big = 'exec("x")\n' + (" " * MAX_FILE_CHARS)
+        small = 'exec("ok")\n'
+        state = {
+            "components": ["big.py", "small.py"],
+            "file_cache": {"big.py": big, "small.py": small},
+        }
+
+        result = behavioral_ast.node(state)
+        files = {f.file for f in result["findings"]}
+        assert "big.py" not in files
+        assert "small.py" in files
+
 
 class TestImportAliasEvasion:
     """Dangerous calls must be detected through ``from ... import`` and ``import ... as``.

@@ -48,7 +48,7 @@ FILE_TYPES: dict[str, str] = {
     ".rs": "rust",
 }
 
-MAX_FILE_BYTES = 1_000_000
+MAX_FILE_CHARS = 1_000_000
 _EVAL_DATASET_FILES = {
     "evals/evals.json",
     "evals/evals.jsonl",
@@ -178,6 +178,33 @@ _DOCUMENTATION_CONFIDENCE_FACTOR = 0.3
 _CODE_EXAMPLE_CONFIDENCE_FACTOR = 0.5
 
 _NON_EXECUTABLE_FILE_TYPES = frozenset({"markdown", "text", "json", "yaml", "toml"})
+_DOC_PROSE_FILE_TYPES = frozenset({"markdown", "text"})
+
+_SEMANTIC_STRING_DOC_PRONE_RULES = frozenset({"PE3", "RA1", "TM1", "AR2"})
+_EXECUTION_SIGNAL = re.compile(
+    r"(?:\b\w+\s*=|\bos\.(?:environ|getenv|system)\b|\bshutil\.rmtree\b|\b(?:subprocess|eval|exec)\b|[|>]"
+    r"|\b(?:open|read_text|write_text)\s*\()",
+    re.IGNORECASE,
+)
+
+
+def _is_documentation_context(af: AnalyzerFinding, file_type: str, path: str, content: str) -> bool:
+    """Return true when a governed finding is prose or a comment without execution signals."""
+    if af.rule_id not in _SEMANTIC_STRING_DOC_PRONE_RULES:
+        return False
+    if path.replace("\\", "/").lower().endswith("skill.md"):
+        return False
+    lines = content.splitlines()
+    matched_line = (
+        lines[af.location.start_line - 1]
+        if 0 < af.location.start_line <= len(lines)
+        else af.context or ""
+    )
+    if file_type in _DOC_PROSE_FILE_TYPES:
+        if _EXECUTION_SIGNAL.search(matched_line):
+            return False
+        return True
+    return bool(matched_line and matched_line.lstrip().startswith(("#", "//")))
 
 
 def _is_documentation_markdown(path: str) -> bool:
@@ -245,12 +272,12 @@ def run_static_patterns(
         if content is None:
             logger.debug("Skipping %s: no content in file_cache", path)
             continue
-        if len(content) > MAX_FILE_BYTES:
+        if len(content) > MAX_FILE_CHARS:
             logger.debug(
-                "Skipping %s: size %d exceeds MAX_FILE_BYTES (%d)",
+                "Skipping %s: size %d characters exceeds MAX_FILE_CHARS (%d)",
                 path,
                 len(content),
-                MAX_FILE_BYTES,
+                MAX_FILE_CHARS,
             )
             continue
         if _is_binary_file(path, content):
@@ -287,6 +314,14 @@ def run_static_patterns(
                         af.location.start_line,
                         af.confidence,
                     )
+                if _is_documentation_context(af, file_type, path, content):
+                    logger.debug(
+                        "Filtered documentation-context finding: %s in %s:%d",
+                        af.rule_id,
+                        path,
+                        af.location.start_line,
+                    )
+                    continue
                 if is_doc_markdown:
                     af.confidence *= _DOCUMENTATION_CONFIDENCE_FACTOR
                 findings.append(analyzer_finding_to_finding(af))

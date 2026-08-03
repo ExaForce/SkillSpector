@@ -153,6 +153,33 @@ skillspector scan ./my-skill/ --format markdown --output report.md
 skillspector scan ./my-skill/ --format sarif --output report.sarif
 ```
 
+### Batch Scanning
+
+Scan entire directories of skills in parallel from `contrib/batch_scan/`:
+
+```bash
+python -m contrib.batch_scan.batch_scan ./my-skills/ --no-llm
+python -m contrib.batch_scan.batch_scan ./my-skills/ --workers 20 -f json -o report.json
+python -m contrib.batch_scan.batch_scan ./tests/fixtures/ -f terminal --workers 20
+```
+
+Supports multilingual detection (zh/ja/ko) and terminal/JSON/Markdown output.
+
+For LLM scans with higher concurrency, configure multiple API keys following
+[`.env.example`](contrib/batch_scan/.env.example) — the pool improves throughput
+and resilience, provided the keys don't share an account-level rate limit.
+
+See the [contrib guide](contrib/batch_scan/docs/) for details.
+
+> **Note on LLM support:** The default configuration targets DeepSeek as the
+> cheapest public option. DeepSeek-Chat is
+> [expected to sunset](https://api-docs.deepseek.com/), and the contributor
+> does not have hardware to test against local models. The batch scanner was
+> originally tested with OpenAI-compatible endpoints — DeepSeek's lack of
+> structured-output support required manual JSON-parsing patches. If you can
+> contribute a more universal backend (Ollama, vLLM, or a different provider),
+> PRs are very welcome.
+
 ### Suppressing False Positives (baseline)
 
 Suppress known/accepted findings so the risk score reflects only un-triaged
@@ -530,6 +557,7 @@ Issues (2)
 | `NVIDIA_INFERENCE_KEY` | Credential for the `nv_build` provider (build.nvidia.com). | Required for LLM analysis when `SKILLSPECTOR_PROVIDER=nv_build` |
 | `OPENAI_API_KEY` | Credential for the OpenAI provider (`SKILLSPECTOR_PROVIDER=openai`). Also serves as the tier-2 fallback in the credential waterfall when the active provider returns no credentials. | Required for LLM analysis when `SKILLSPECTOR_PROVIDER=openai` |
 | `OPENAI_BASE_URL` | Override the OpenAI endpoint (e.g. point at Ollama). | Optional |
+| `SKILLSPECTOR_REASONING_EFFORT` | Optional provider- and model-dependent reasoning-effort setting. Non-empty values are trimmed and passed through unchanged; unset or blank preserves provider-default behavior. | Optional |
 | `ANTHROPIC_API_KEY` | Credential for the Anthropic provider (`SKILLSPECTOR_PROVIDER=anthropic`). | Required for LLM analysis when `SKILLSPECTOR_PROVIDER=anthropic` |
 | `ANTHROPIC_PROXY_ENDPOINT_URL` | Full endpoint URL for the Anthropic proxy provider (Vertex-style raw-predict). | Required when `SKILLSPECTOR_PROVIDER=anthropic_proxy` |
 | `ANTHROPIC_PROXY_API_KEY` | Bearer token for the Anthropic proxy provider. | Required when `SKILLSPECTOR_PROVIDER=anthropic_proxy` |

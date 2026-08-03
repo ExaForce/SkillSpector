@@ -30,7 +30,7 @@ from .common import (
     resolve_call_name,
     resolve_dynamic_import_call,
 )
-from .static_runner import MAX_FILE_BYTES, analyzer_finding_to_finding
+from .static_runner import MAX_FILE_CHARS, analyzer_finding_to_finding
 
 ANALYZER_ID = "behavioral_ast"
 logger = get_logger(__name__)
@@ -243,7 +243,7 @@ def node(state: SkillspectorState) -> AnalyzerNodeResponse:
         if not path.endswith(".py"):
             continue
         content = file_cache.get(path)
-        if content is None or len(content) > MAX_FILE_BYTES:
+        if content is None or len(content) > MAX_FILE_CHARS:
             continue
         raw = _analyze_python(content, path)
         all_findings.extend(analyzer_finding_to_finding(af) for af in raw)

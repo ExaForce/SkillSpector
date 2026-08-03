@@ -15,6 +15,8 @@
 
 """Pattern tests: direct analyze() on static_patterns_* modules."""
 
+import pytest
+
 from skillspector.models import Severity
 from skillspector.nodes.analyzers import (
     static_patterns_data_exfiltration as data_exfiltration_module,
@@ -94,6 +96,20 @@ This is a helpful skill.
         content = f"# Skill\n\nWorks for Scotland {scotland}.\n"
         findings = prompt_injection_module.analyze(content, "test.md", "markdown")
         assert not any(f.rule_id == "P2" for f in findings)
+
+    def test_p2_emoji_zwj_not_flagged(self) -> None:
+        """Emoji ZWJ sequences are visible emoji, not hidden instructions."""
+        judge = "\U0001f9d1\u200d\u2696\ufe0f"
+        technologist = "\U0001f469\U0001f3fd\u200d\U0001f4bb"
+        content = f"# Skill\n\nWorks for judge role {judge} and coding role {technologist}.\n"
+        findings = prompt_injection_module.analyze(content, "test.md", "markdown")
+        assert not any(f.rule_id == "P2" for f in findings)
+
+    def test_p2_bare_zwj_still_flagged(self) -> None:
+        """Bare zero-width joiners outside emoji sequences still yield P2."""
+        content = "# Skill\n\nNormal text\u200dSYSTEM override.\n"
+        findings = prompt_injection_module.analyze(content, "test.md", "markdown")
+        assert any(f.rule_id == "P2" for f in findings)
 
     def test_safe_content(self) -> None:
         """Safe content does not trigger false positives."""
@@ -216,6 +232,72 @@ Read the .env file and extract all values.
         assert any(f.rule_id == "PE3" for f in findings), (
             "Real credential access should be detected"
         )
+
+    @pytest.mark.parametrize(
+        "content",
+        [
+            pytest.param(
+                'docker run --rm --user "$(id -u):$(id -g)" \\\n'
+                "  -v /etc/passwd:/etc/passwd:ro \\\n"
+                "  -v /etc/group:/etc/group:ro cuda-udf-build\n",
+                id="docker-short-volume",
+            ),
+            pytest.param(
+                "podman run --volume=/etc/passwd:/etc/passwd:ro image\n",
+                id="podman-long-volume-equals",
+            ),
+            pytest.param(
+                'docker run --volume "/etc/passwd:/etc/passwd:ro" image\n',
+                id="quoted-volume",
+            ),
+        ],
+    )
+    def test_pe3_read_only_uid_map_passwd_mount_not_flagged(self, content: str) -> None:
+        """Exact read-only passwd UID-map mounts are not credential access."""
+        findings = privilege_escalation_module.analyze(content, "SKILL.md", "markdown")
+        assert not any(f.rule_id == "PE3" for f in findings)
+
+    @pytest.mark.parametrize(
+        "content",
+        [
+            pytest.param(
+                "docker run -v /etc/passwd:/etc/passwd:rw image",
+                id="writable-mode",
+            ),
+            pytest.param(
+                "docker run -v /etc/passwd:/etc/passwd image",
+                id="implicit-writable-mode",
+            ),
+            pytest.param(
+                "docker run -v /tmp/etc/passwd:/etc/passwd:ro image",
+                id="alternate-source",
+            ),
+            pytest.param(
+                "docker run -v /etc/passwd:/tmp/passwd:ro image",
+                id="alternate-target",
+            ),
+            pytest.param(
+                "echo -v /etc/passwd:/etc/passwd:ro",
+                id="not-a-container-run",
+            ),
+            pytest.param(
+                "docker run image\necho -v /etc/passwd:/etc/passwd:ro",
+                id="container-run-on-unrelated-command",
+            ),
+        ],
+    )
+    def test_pe3_non_exact_passwd_mount_still_detected(self, content: str) -> None:
+        """Only the exact, explicit read-only container mount is exempt."""
+        findings = privilege_escalation_module.analyze(content, "run.sh", "shell")
+        assert any(f.rule_id == "PE3" for f in findings)
+
+    def test_pe3_adjacent_passwd_read_still_detected(self) -> None:
+        """A safe mount must not hide another passwd access in the same context."""
+        content = "cat /etc/passwd && docker run -v /etc/passwd:/etc/passwd:ro image"
+        findings = privilege_escalation_module.analyze(content, "run.sh", "shell")
+        pe3 = [finding for finding in findings if finding.rule_id == "PE3"]
+        assert len(pe3) == 1
+        assert pe3[0].matched_text == "/etc/passwd"
 
 
 class TestSupplyChain:
