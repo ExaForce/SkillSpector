@@ -259,12 +259,44 @@ class TestEdgeCases:
         assert result["findings"] == []
 
     def test_oversized_file_skipped(self):
-        from skillspector.nodes.analyzers.static_runner import MAX_FILE_BYTES
+        from skillspector.nodes.analyzers.static_runner import MAX_FILE_CHARS
 
-        big = 'import os\nexec(os.environ.get("KEY"))\n' + ("x = 1\n" * MAX_FILE_BYTES)
+        big = 'import os\nexec(os.environ.get("KEY"))\n' + ("x = 1\n" * MAX_FILE_CHARS)
         state = {"components": ["big.py"], "file_cache": {"big.py": big}}
         result = behavioral_taint_tracking.node(state)
         assert result["findings"] == []
+
+    def test_exact_character_limit_scanned(self):
+        from skillspector.nodes.analyzers.static_runner import MAX_FILE_CHARS
+
+        prefix = 'import os\nexec(os.environ.get("KEY"))\n'
+        code = prefix + (" " * (MAX_FILE_CHARS - len(prefix)))
+        assert len(code) == MAX_FILE_CHARS
+        assert _rule_ids(_run(code))
+
+    def test_multibyte_under_char_limit_scanned(self):
+        from skillspector.nodes.analyzers.static_runner import MAX_FILE_CHARS
+
+        prefix = 'import os\nexec(os.environ.get("KEY"))\n# '
+        code = prefix + ("🦄" * 250_000)
+        assert len(code) <= MAX_FILE_CHARS
+        assert len(code.encode("utf-8")) > MAX_FILE_CHARS
+        assert _rule_ids(_run(code))
+
+    def test_oversized_file_does_not_stop_later_components(self):
+        from skillspector.nodes.analyzers.static_runner import MAX_FILE_CHARS
+
+        big = 'import os\nexec(os.environ.get("KEY"))\n' + ("x = 1\n" * MAX_FILE_CHARS)
+        small = 'import os\nexec(os.environ.get("KEY"))\n'
+        state = {
+            "components": ["big.py", "small.py"],
+            "file_cache": {"big.py": big, "small.py": small},
+        }
+
+        result = behavioral_taint_tracking.node(state)
+        files = {f.file for f in result["findings"]}
+        assert "big.py" not in files
+        assert "small.py" in files
 
     def test_multiple_files_produce_findings(self):
         state = {

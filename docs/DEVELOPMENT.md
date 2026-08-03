@@ -221,6 +221,34 @@ Optional state keys: `mode`, `model_config`, `output_format`, `use_llm`. The res
 - **Commands**: `make test`, `make test-cov`.
 - **Key tests**: [test_graph.py](../tests/integration/test_graph.py) invokes the graph and asserts `findings`, `sarif_report`, `risk_score`, `report_body`; [test_input_handler.py](../tests/unit/test_input_handler.py) covers directory, zip, and single-file resolution; [test_resolve_input.py](../tests/nodes/test_resolve_input.py) covers the resolve_input node; [test_build_context.py](../tests/nodes/test_build_context.py) asserts `component_metadata` and `has_executable_scripts`.
 
+### CI coverage: public GitHub and internal GitLab
+
+SkillSpector uses its public GitHub Actions workflow as the contributor-facing
+quality gate and runs an additional validation pipeline in NVIDIA's internal
+GitLab. The two pipelines intentionally share the core checks, while each also
+has checks suited to its environment.
+
+| Check | Public GitHub CI | Internal GitLab CI |
+|-------|------------------|--------------------|
+| Trigger | Pull requests to `main` and pushes to `main` | Merge requests targeting `main` and pushes to the default branch |
+| Runtime | Python 3.12 with `uv` on GitHub-hosted Ubuntu runners | Python 3.12 with `uv` in a container on internal Kubernetes runners |
+| Lint and formatting | Ruff lint and format checks | The same Ruff lint and format checks |
+| Unit tests | Non-integration, non-provider tests with coverage | The same unit-test set with Cobertura coverage artifacts |
+| Integration tests | Not run | Full-graph integration suite; these tests may call configured LLM providers |
+| Live provider tests | Not run | Optional manual tests against OpenAI, Anthropic, and NVIDIA Build using masked CI credentials |
+| Docker smoke test | Runs when Docker- or application-related files change and uploads smoke reports | Runs for the same categories of changes with Docker-in-Docker and preserves smoke reports |
+| Static analysis | OpenSSF Scorecard runs in a separate public workflow | SonarQube runs after unit tests and is currently non-blocking |
+| Contribution policy | DCO sign-off check on pull requests | No separate DCO job |
+| Automated review | No review bot job is defined in the workflow | CodeRabbit is connected through an external integration/webhook, not a runner job |
+
+The internal pipeline therefore adds coverage for the full application flow,
+live provider connectivity, and SonarQube analysis. Its default-branch pipeline
+rechecks the exact commit that landed after a merge. Live provider testing is
+manual so it only sends requests when a maintainer chooses to run it; missing
+credentials produce a warning, while invalid credentials or provider failures
+fail the corresponding test. SonarQube is informational today and does not
+block a merge request.
+
 ---
 
 ## 8. Data models
@@ -269,6 +297,7 @@ Copy [.env.example](../.env.example) to `.env` in the project root and set value
 | `NVIDIA_INFERENCE_KEY` | Credential for `nv_build`. | `nvapi-...` |
 | `OPENAI_API_KEY` | Credential for `SKILLSPECTOR_PROVIDER=openai`. Also tier-2 fallback for non-OpenAI providers. | `sk-...` |
 | `OPENAI_BASE_URL` | Override the OpenAI endpoint (e.g. point at Ollama). | `http://localhost:11434/v1` |
+| `SKILLSPECTOR_REASONING_EFFORT` | Optional provider- and model-dependent reasoning-effort setting. Non-empty values are trimmed and passed through unchanged; unset or blank preserves provider-default behavior. | `high` |
 | `ANTHROPIC_API_KEY` | Credential for `SKILLSPECTOR_PROVIDER=anthropic`. | `sk-ant-...` |
 | `SKILLSPECTOR_MODEL` | Override the active provider's bundled default model (see [README.md](../README.md) for per-provider defaults). For `claude_cli`, this is passed as `--model` to the `claude` binary. | `gpt-5.2` |
 

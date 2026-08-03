@@ -65,9 +65,9 @@ logger = get_logger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
-# Reuse the same cap as static_runner so a skill that's too big for static
-# analysis is also too big to send to the CLI.
-MAX_INPUT_BYTES = 1_000_000  # 1 MB — mirrors MAX_FILE_BYTES in static_runner.py
+# Static analyzers stop at a one-million-character decoded text limit.
+# The CLI prompt path separately caps encoded UTF-8 bytes.
+MAX_INPUT_BYTES = 1_000_000  # 1 MB encoded prompt cap
 MAX_OUTPUT_BYTES = 10_000_000  # 10 MB safety cap on stdout
 MAX_STDERR_BYTES = 64_000  # stderr is only used for error snippets
 CLI_TIMEOUT_SECONDS = 300  # 5-minute per-call hard limit
