@@ -1,3 +1,76 @@
+### 2.8.1 (Thursday, August 06, 2026)
+### Features/Bug Fixes
+* fix(llm): isolate malformed structured responses per batch
+---
+### 2.8.0 (Thursday, August 06, 2026)
+### Features/Bug Fixes
+* fix(baseline): exclude selected baseline from scans
+---
+### 2.7.2 (Thursday, August 06, 2026)
+### Features/Bug Fixes
+* fix(pe3): distinguish OAuth access-token nouns from credential access
+---
+### 2.7.0 (Thursday, August 06, 2026)
+### Features/Bug Fixes
+* fix(telemetry): harden inference usage normalization
+---
+### 2.6.0 (Wednesday, August 05, 2026)
+### Features/Bug Fixes
+* feat(release): auto-generate versioned release notes like CHANGELOG
+* feat(telemetry): export provider inference usage
+---
+### 2.5.3 (Tuesday, August 04, 2026)
+### Features/Bug Fixes
+* fix(analyzers): share Python AST parsing for environment-read detection (#332)
+* fix(output-handling): avoid RegExp.exec false positives (#341)
+* docs(skill): allow delegated import MR preparation
+* docs(lifecycle): optimize OSS import queue and cutoff
+---
+### 2.5.2 (Tuesday, August 04, 2026)
+### Features/Bug Fixes
+* test(mp2): lock the layout-span guard against regressions (#342)
+* fix(nv_build): cover reported model metadata (#279)
+* (chore) pin dependencies for workflows and Docker base images (#238)
+* fix(analyzer): reduce instructional-prose false positives in static scans (#103) (#232)
+* fix(input-handler): bound URL, zip, and git ingest paths (#164)
+* fix: read exact versions from Python lockfiles for OSV (#263)
+* feat(mcp): add registry posture scanning (#280)
+* fix: exclude valid OMS signatures from content analysis (#261)
+* fix(static): markdown table and quote syntax is not an execution signal (#321)
+* fix(agent-cli): Windows temp-cwd cleanup must not fail a successful batch (#317)
+* fix(supply-chain): SC4 must not claim a vulnerability it did not verify (#319)
+* docs: link to the Verified Skills pipeline and hosted docs (#347)
+* test(release): make changelog assertions version-aware
+* fix(release): harden patch publishing and changelog baseline
+---
+### 2.5.1 (Thursday, July 30, 2026)
+### Features/Bug Fixes
+* feat(llm): configurable analyzer fan-out concurrency via SKILLSPECTOR_MAX_LLM_CONCURRENCY (part of #303) (#305)
+* release: prepare package and skill lifecycle
+* fix(analyzer): avoid OH1 false positives for subprocess --output and capture_output
+* docs: clarify 2.5.0 execution accounting
+---
+### 2.5.0 (Friday, July 24, 2026)
+### Features/Bug Fixes
+* feat: Implement canonical inspection ledger reporting
+* fix(security): harden P6, PE3, and baseline fingerprints
+* fix(release): preserve GitHub PR titles in changelog
+* feat: publish GitHub releases from labeled PRs
+* docs: add skill-driven GitHub lifecycle
+---
+### 2.4.4 (Thursday, July 23, 2026)
+### Features/Bug Fixes
+* fix(anthropic): re-apply ANTHROPIC_BASE_URL override reverted by 2.4.3 snapshot (#301)
+---
+### 2.4.3 (Wednesday, July 22, 2026)
+### Features/Bug Fixes
+* Clarify CLI runtime model fallback in provider docs
+* fix(provider): align Claude fallback contract with settings isolation (#295)
+* fix(provider): isolate Claude settings hooks in spawned CLI (#295)
+* fix(suppression): match reported finding text
+* ci: disable optional provider test
+* feat: publish a public-safe changelog
+---
 ### 2.4.2 (Tuesday, July 21, 2026)
 ### Features/Bug Fixes
 * fix(oss): keep internal provider references private
