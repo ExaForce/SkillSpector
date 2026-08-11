@@ -9,7 +9,7 @@ files. All mutations are guarded: an upstream rename/rewrite raises
 
 from __future__ import annotations
 
-from . import _prompt_patches, _schema_patches
+from . import _prompt_patches, _sampling_patches, _schema_patches
 
 _PATCHED = False
 
@@ -21,4 +21,5 @@ def apply_patches() -> None:
         return
     _schema_patches.apply()
     _prompt_patches.apply()
+    _sampling_patches.apply()
     _PATCHED = True
