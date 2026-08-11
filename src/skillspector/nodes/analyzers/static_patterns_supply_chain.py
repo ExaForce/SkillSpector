@@ -32,6 +32,10 @@ import sys
 import tomllib
 from urllib.parse import urlparse
 
+from packaging.requirements import InvalidRequirement, Requirement
+from packaging.version import InvalidVersion, Version
+
+from skillspector.inspection_ledger import LedgerOutcome, analyzer_status_for_events, ledger_event
 from skillspector.logging_config import get_logger
 from skillspector.models import AnalyzerFinding, Finding, Location, Severity
 from skillspector.state import AnalyzerNodeResponse, SkillspectorState
@@ -416,18 +420,127 @@ _OVERLY_BROAD_SINGLE_WORDS: set[str] = {
 }
 
 
+def _pinned_version(operator: str | None, version: str | None) -> str | None:
+    """Return *version* only when the specifier pins one concrete release.
+
+    A vulnerability lookup answers "is THIS release affected?". That question is only
+    meaningful when the manifest admits exactly one release. Under PEP 440 that is ``==``
+    with a fully concrete version: floors (``>=``, ``>``), caps (``<=``, ``<``), exclusions
+    (``!=``), compatible releases (``~=``) and wildcard equality (``==1.*``) all admit more
+    than one, so the installed version is unknown and must not be passed off as a pin.
+    """
+    if operator != "==" or not version or "*" in version:
+        return None
+    try:
+        Version(version)
+    except InvalidVersion:
+        return None
+    return version
+
+
+def _extract_python_requirement(spec: str) -> tuple[str, str | None] | None:
+    """Extract a package and a concrete PEP 440 pin from a PEP 508 requirement.
+
+    ``packaging`` parses complete specifiers rather than accepting a numeric prefix.
+    That keeps valid PEP 440 versions such as ``10.0.0rc1``, ``10.0.0.post1``,
+    and ``1!10.0`` intact for OSV queries.
+    """
+    try:
+        requirement = Requirement(spec)
+    except InvalidRequirement:
+        return None
+
+    specifiers = list(requirement.specifier)
+    if len(specifiers) != 1:
+        return requirement.name, None
+    specifier = specifiers[0]
+    return requirement.name, _pinned_version(specifier.operator, specifier.version)
+
+
+def _logical_requirement_lines(content: str) -> list[tuple[int, str]]:
+    """Join pip-style continuations and retain each logical line's first line number."""
+    logical_lines: list[tuple[int, str]] = []
+    parts: list[str] = []
+    start_line = 1
+
+    for line_num, line in enumerate(content.splitlines(), 1):
+        if not parts:
+            start_line = line_num
+
+        is_comment = line.lstrip().startswith("#")
+        if line.endswith("\\") and not is_comment:
+            parts.append(line.strip("\\"))
+            continue
+
+        if is_comment:
+            # pip prefixes a comment that closes a continued line with a space,
+            # allowing its later comment-stripping pass to recognize it.
+            line = " " + line
+        parts.append(line)
+        logical_lines.append((start_line, "".join(parts)))
+        parts = []
+
+    if parts:
+        logical_lines.append((start_line, "".join(parts)))
+    return logical_lines
+
+
+def _strip_pip_per_requirement_options(line: str) -> str:
+    """Remove pip-only options while preserving the original PEP 508 prefix."""
+    quote: str | None = None
+    escaped = False
+    token_start = True
+
+    for index, char in enumerate(line):
+        if escaped:
+            escaped = False
+            token_start = False
+        elif char == "\\":
+            escaped = True
+            token_start = False
+        elif quote:
+            if char == quote:
+                quote = None
+        elif char in {"'", '"'}:
+            quote = char
+            token_start = False
+        elif char.isspace():
+            token_start = True
+        elif token_start and char == "-":
+            return line[:index].rstrip()
+        else:
+            token_start = False
+    return line
+
+
+def _pinned_npm_version(spec: str) -> str | None:
+    """Return the pinned version of an npm dependency spec, or None for any range.
+
+    npm defaults to caret ranges, so ``"^1.8.3"`` is *not* a pin: stripping the operator
+    turns a range into a concrete release that the project may never install.
+    """
+    candidate = spec.strip()
+    if re.fullmatch(r"\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?", candidate):
+        return candidate
+    return None
+
+
 def _extract_packages_from_requirements(content: str) -> list[tuple[str, str | None, int]]:
     """Extract (package_name, version_or_None, line_number) from requirements.txt format."""
     results: list[tuple[str, str | None, int]] = []
-    for i, line in enumerate(content.splitlines(), 1):
+    for line_num, line in _logical_requirement_lines(content):
         line = line.strip()
         if not line or line.startswith("#") or line.startswith("-"):
             continue
-        m = re.match(r"^([a-zA-Z][a-zA-Z0-9._-]*)(?:\[.*?\])?\s*(?:([=<>!~]=?)\s*([\d.*]+))?", line)
-        if m:
-            name = m.group(1)
-            version = m.group(3) if m.group(2) else None
-            results.append((name, version, i))
+        # pip treats a whitespace-prefixed ``#`` as an inline comment, while
+        # PEP 508 parsing does not. Preserve normal requirements.txt behavior
+        # before handing the complete requirement to ``packaging``.
+        line = re.split(r"\s+#", line, maxsplit=1)[0]
+        line = _strip_pip_per_requirement_options(line)
+        requirement = _extract_python_requirement(line)
+        if requirement:
+            name, version = requirement
+            results.append((name, version, line_num))
     return results
 
 
@@ -447,8 +560,7 @@ def _extract_packages_from_package_json(content: str) -> list[tuple[str, str | N
             m = re.match(r'"([^"]+)"\s*:\s*"([^"]*)"', stripped)
             if m:
                 name = m.group(1)
-                ver_str = m.group(2).lstrip("^~>=<")
-                version = ver_str if re.match(r"^\d", ver_str) else None
+                version = _pinned_npm_version(m.group(2))
                 results.append((name, version, i))
     return results
 
@@ -490,15 +602,87 @@ def _extract_packages_from_pyproject(content: str) -> list[tuple[str, str | None
 
     results: list[tuple[str, str | None, int]] = []
     for spec in specs:
-        m = re.match(r"^([a-zA-Z][a-zA-Z0-9._-]*)(?:\[.*?\])?\s*(?:([=<>!~]=?)\s*([\d.*]+))?", spec)
-        if not m:
+        requirement = _extract_python_requirement(spec)
+        if not requirement:
             continue
-        name = m.group(1)
-        version = m.group(3) if m.group(2) in ("==", "<=") else None
+        name, version = requirement
         idx = content.find(spec)
         line_num = get_line_number(content, idx) if idx >= 0 else 1
         results.append((name, version, line_num))
     return results
+
+
+_LOCKFILE_PACKAGE_BLOCK_RE = re.compile(
+    r"(?ms)^\s*\[\[package\]\]\s*$.*?(?=^\s*\[\[package\]\]\s*$|\Z)"
+)
+
+
+def _normalize_package_name(name: str) -> str:
+    """Normalize package names the same way OSV/fallback coverage does."""
+    return name.lower().replace("_", "-")
+
+
+def _is_python_lockfile(file_path: str) -> bool:
+    lower_path = file_path.lower()
+    return "uv.lock" in lower_path or "poetry.lock" in lower_path
+
+
+def _extract_packages_from_toml_lock(content: str) -> list[tuple[str, str | None, int]]:
+    """Extract exact package versions from TOML lockfiles such as uv.lock and poetry.lock."""
+    try:
+        data = tomllib.loads(content)
+    except tomllib.TOMLDecodeError:
+        return []
+    packages = data.get("package")
+    if not isinstance(packages, list):
+        return []
+    blocks = list(_LOCKFILE_PACKAGE_BLOCK_RE.finditer(content))
+    results: list[tuple[str, str | None, int]] = []
+    for package, block in zip(packages, blocks, strict=False):
+        if not isinstance(package, dict):
+            continue
+        name = package.get("name")
+        version = package.get("version")
+        if not isinstance(name, str) or not name.strip():
+            continue
+        version_value = version.strip() if isinstance(version, str) and version.strip() else None
+        name_match = re.search(r"(?m)^\s*name\s*=", block.group(0))
+        idx = block.start() + name_match.start() if name_match else block.start()
+        line_num = get_line_number(content, idx)
+        results.append((name, version_value, line_num))
+    return results
+
+
+def _apply_locked_versions(
+    packages: list[tuple[str, str | None, int]],
+    locked_versions: dict[str, str] | None,
+) -> list[tuple[str, str | None, int]]:
+    """Prefer lockfile versions for manifest dependencies without exact versions."""
+    if not locked_versions:
+        return packages
+    resolved: list[tuple[str, str | None, int]] = []
+    for name, version, line_num in packages:
+        locked_version = locked_versions.get(_normalize_package_name(name))
+        resolved.append((name, version or locked_version, line_num))
+    return resolved
+
+
+def _collect_locked_versions(
+    file_cache: dict[str, str],
+    components: list[str],
+) -> dict[str, str]:
+    """Build package -> exact version map from Python lockfiles in the project."""
+    locked_versions: dict[str, str] = {}
+    for path in components:
+        if not _is_python_lockfile(path):
+            continue
+        content = file_cache.get(path)
+        if not content:
+            continue
+        for name, version, _line_num in _extract_packages_from_toml_lock(content):
+            if version:
+                locked_versions[_normalize_package_name(name)] = version
+    return locked_versions
 
 
 def _version_lt(v1: str, v2: str) -> bool:
@@ -720,20 +904,37 @@ def _sc4_from_osv(
                 worst_severity = v.severity
         severity = _osv_severity_to_app(worst_severity)
         confidence = _SEVERITY_CONFIDENCE.get(worst_severity.upper(), 0.75)
-        version_str = f"=={pkg_version}" if pkg_version else ""
         vuln_desc = _format_vuln_ids(vulns)
+        if pkg_version:
+            message = (
+                f"Known Vulnerable Dependency: {pkg_name}=={pkg_version}"
+                f" — {len(vulns)} advisory(ies): {vuln_desc}"
+            )
+            matched_text = f"{pkg_name}=={pkg_version}"
+        else:
+            # No resolvable version: OSV was queried by name only, so these advisories are
+            # NOT matched against the release that will actually be installed — they are the
+            # package's history, and the worst of them may predate every version the range
+            # admits. Reporting that as the finding's severity turns "setuptools>=61" into a
+            # CRITICAL. The unpinned dependency itself is already reported by SC1, so what is
+            # left to say here is "could not verify", and it must not outrank a real match.
+            severity = Severity.LOW
+            confidence = 0.4
+            message = (
+                f"Unverifiable Dependency: {pkg_name} has {len(vulns)} known advisory(ies)"
+                f" ({vuln_desc}), but the manifest does not pin a version, so it is unknown"
+                " whether the installed release is affected"
+            )
+            matched_text = pkg_name
         findings.append(
             AnalyzerFinding(
                 rule_id="SC4",
-                message=(
-                    f"Known Vulnerable Dependency: {pkg_name}{version_str}"
-                    f" — {len(vulns)} advisory(ies): {vuln_desc}"
-                ),
+                message=message,
                 severity=severity,
                 location=Location(file=file_path, start_line=line_num),
                 confidence=confidence,
                 tags=tag,
-                matched_text=f"{pkg_name}{version_str}" if version_str else pkg_name,
+                matched_text=matched_text,
             )
         )
     return findings, covered
@@ -785,14 +986,17 @@ def _sc4_from_fallback(
 def _analyze_dependencies(
     content: str,
     file_path: str,
+    locked_versions: dict[str, str] | None = None,
 ) -> list[AnalyzerFinding]:
     """Run SC4/SC5/SC6 checks on dependency files."""
     findings: list[AnalyzerFinding] = []
     tag = [PatternCategory.SUPPLY_CHAIN.value]
 
     lower_path = file_path.lower()
-    is_python_dep = any(
-        n in lower_path for n in ["requirements", "pyproject.toml", "setup.py", "pipfile"]
+    is_lockfile = _is_python_lockfile(lower_path)
+    is_python_dep = (
+        any(n in lower_path for n in ["requirements", "pyproject.toml", "setup.py", "pipfile"])
+        or is_lockfile
     )
     is_npm_dep = "package.json" in lower_path
 
@@ -802,8 +1006,12 @@ def _analyze_dependencies(
     if is_python_dep:
         if "pyproject.toml" in lower_path:
             packages = _extract_packages_from_pyproject(content)
+        elif is_lockfile:
+            packages = _extract_packages_from_toml_lock(content)
         else:
             packages = _extract_packages_from_requirements(content)
+        if not is_lockfile:
+            packages = _apply_locked_versions(packages, locked_versions)
         ecosystem = ECOSYSTEM_PYPI
         fallback_db = _FALLBACK_VULNERABLE_PYPI
         popular = _POPULAR_PYPI
@@ -985,24 +1193,63 @@ def _analyze_triggers(manifest: dict[str, object], skill_path: str) -> list[Find
 def node(state: SkillspectorState) -> AnalyzerNodeResponse:
     """Run supply_chain patterns (SC1–SC6) and trigger analysis (TR1–TR3)."""
     # SC1–SC3 via static_runner
-    findings = static_runner.run_static_patterns(state, [sys.modules[__name__]])
+    response = static_runner.run_static_patterns_with_ledger(state, [sys.modules[__name__]])
+    findings = response["findings"]
+
+    def record_extra_findings(
+        path: str,
+        extra_findings: list[Finding],
+        fallback_analyzer_id: str,
+    ) -> None:
+        """Attach dependency/manifest findings to the matching completed work item."""
+        if not extra_findings:
+            return
+        finding_ids = [finding.finding_id for finding in extra_findings]
+        for event in response["inspection_ledger"]:
+            if event["path"] == path and event["outcome"] is LedgerOutcome.COMPLETED:
+                event["emitted_finding_ids"].extend(finding_ids)
+                return
+        response["inspection_ledger"].append(
+            ledger_event(
+                analyzer_id=fallback_analyzer_id,
+                outcome=LedgerOutcome.COMPLETED,
+                phase="static",
+                path=path,
+                emitted_finding_ids=finding_ids,
+            )
+        )
 
     # SC4–SC6: dependency-level analysis on dependency files
     components: list[str] = state.get("components") or []
     file_cache: dict[str, str] = state.get("file_cache") or {}
+    locked_versions = _collect_locked_versions(file_cache, components)
     for path in components:
         lower_path = path.lower()
         is_dep_file = any(
             n in lower_path
-            for n in ["requirements", "package.json", "pyproject.toml", "setup.py", "pipfile"]
+            for n in [
+                "requirements",
+                "package.json",
+                "pyproject.toml",
+                "setup.py",
+                "pipfile",
+                "uv.lock",
+                "poetry.lock",
+            ]
         )
         if not is_dep_file:
             continue
         content = file_cache.get(path)
         if not content:
             continue
-        dep_findings = _analyze_dependencies(content, path)
-        findings.extend(analyzer_finding_to_finding(af) for af in dep_findings)
+        dep_findings = _analyze_dependencies(content, path, locked_versions)
+        dependency_findings = [analyzer_finding_to_finding(af) for af in dep_findings]
+        findings.extend(dependency_findings)
+        record_extra_findings(
+            path,
+            dependency_findings,
+            f"{ANALYZER_ID}_dependencies",
+        )
 
     # TR1–TR3: trigger analysis from manifest
     manifest: dict[str, object] = state.get("manifest") or {}
@@ -1010,6 +1257,14 @@ def node(state: SkillspectorState) -> AnalyzerNodeResponse:
         skill_path = state.get("skill_path") or ""
         trigger_findings = _analyze_triggers(manifest, skill_path)
         findings.extend(trigger_findings)
+        record_extra_findings(
+            "SKILL.md",
+            trigger_findings,
+            f"{ANALYZER_ID}_triggers",
+        )
 
     logger.info("%s: %d findings", ANALYZER_ID, len(findings))
-    return {"findings": findings}
+    response["analyzer_status_events"] = [
+        analyzer_status_for_events(ANALYZER_ID, response["inspection_ledger"])
+    ]
+    return response
