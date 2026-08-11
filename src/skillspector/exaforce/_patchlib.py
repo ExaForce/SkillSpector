@@ -8,6 +8,9 @@ instead of silently leaving the fork's runtime behavior stale.
 
 from __future__ import annotations
 
+import functools
+import inspect
+from collections.abc import Callable
 from types import ModuleType
 
 from pydantic import BaseModel
@@ -36,6 +39,48 @@ def remove_model_fields(model: type[BaseModel], field_names: list[str]) -> None:
 def pop_field_validator(model: type[BaseModel], validator_name: str) -> None:
     """Remove a ``field_validator`` decorator by its function name (no-op if absent)."""
     model.__pydantic_decorators__.field_validators.pop(validator_name, None)
+
+
+def wrap_module_callable(
+    module: ModuleType,
+    attr: str,
+    transform: Callable[[object], object],
+    *,
+    expected_params: tuple[str, ...] = (),
+) -> None:
+    """Post-process the return value of module-global callable ``attr``.
+
+    The wrapped callable keeps its original signature and behavior; only its
+    result is passed through *transform*. Used where the fork needs to adjust an
+    object upstream constructs, without forking the constructor itself.
+
+    ``expected_params`` names parameters the upstream signature must still have,
+    so a signature rewrite surfaces as ``PatchDriftError`` rather than a patch
+    that silently stops matching. Re-wrapping an already-wrapped callable is a
+    no-op, keeping :func:`apply` idempotent.
+    """
+    target = getattr(module, attr, None)
+    if target is None or not callable(target):
+        raise PatchDriftError(
+            f"{module.__name__}.{attr} is missing or not callable; "
+            "upstream changed — update the exaforce patch."
+        )
+    if getattr(target, "_exaforce_wrapped", False):
+        return
+    params = inspect.signature(target).parameters
+    for name in expected_params:
+        if name not in params:
+            raise PatchDriftError(
+                f"{module.__name__}.{attr} has no parameter {name!r}; "
+                "upstream changed — update the exaforce patch."
+            )
+
+    @functools.wraps(target)
+    def wrapper(*args: object, **kwargs: object) -> object:
+        return transform(target(*args, **kwargs))
+
+    wrapper._exaforce_wrapped = True  # type: ignore[attr-defined]
+    setattr(module, attr, wrapper)
 
 
 def replace_module_str(module: ModuleType, attr: str, old: str, new: str) -> None:
