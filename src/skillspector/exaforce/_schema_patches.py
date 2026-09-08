@@ -15,7 +15,7 @@ from skillspector.models import Finding
 from ._patchlib import pop_field_validator, remove_model_fields
 
 
-def _pruned_to_finding(self: "llm_base.LLMFinding", file: str) -> Finding:
+def _pruned_to_finding(self: llm_base.LLMFinding, file: str) -> Finding:
     """``LLMFinding.to_finding`` without the removed explanation/remediation."""
     return Finding(
         rule_id=self.rule_id,
