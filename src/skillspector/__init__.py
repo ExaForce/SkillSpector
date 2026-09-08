@@ -38,4 +38,5 @@ __all__ = ["create_graph", "graph", "__version__"]
 
 # ExaForce fork: apply runtime schema/prompt patches (kept out of upstream files).
 from skillspector import exaforce as _exaforce  # noqa: E402
+
 _exaforce.apply_patches()
