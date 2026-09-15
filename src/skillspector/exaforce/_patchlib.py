@@ -95,3 +95,38 @@ def replace_module_str(module: ModuleType, attr: str, old: str, new: str) -> Non
             "upstream changed — update the exaforce patch."
         )
     setattr(module, attr, current.replace(old, new))
+
+
+def replace_pattern(
+    module: ModuleType,
+    attr: str,
+    old: str,
+    new: str,
+) -> None:
+    """Swap one regex inside a module-level ``[(pattern, confidence), ...]`` list.
+
+    The fork's analyzer overrides are one-line regex corrections, and this is
+    the guard that keeps them honest across an upstream merge. ``old`` must
+    still be present exactly: if upstream rewrites the pattern *or fixes it
+    themselves*, this raises ``PatchDriftError`` rather than silently applying
+    a stale correction or shadowing an upstream fix. Either way a human looks.
+
+    Confidence is preserved -- these patches change what a pattern matches,
+    never how much a match is believed.
+    """
+    patterns = getattr(module, attr, None)
+    if not isinstance(patterns, list):
+        raise PatchDriftError(
+            f"{module.__name__}.{attr} is missing or not a list; "
+            "upstream changed — update the exaforce patch."
+        )
+    for index, entry in enumerate(patterns):
+        if isinstance(entry, tuple) and entry and entry[0] == old:
+            patterns[index] = (new,) + entry[1:]
+            return
+    if any(isinstance(e, tuple) and e and e[0] == new for e in patterns):
+        return  # already applied; keeps apply() idempotent
+    raise PatchDriftError(
+        f"{module.__name__}.{attr} no longer contains the pattern this fork "
+        "corrects; upstream changed (or fixed it) — review the exaforce patch."
+    )
