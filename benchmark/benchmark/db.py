@@ -52,7 +52,9 @@ CREATE TABLE classifications (
     run_time DOUBLE,
     status TEXT,
     error TEXT,
-    num_issues INTEGER
+    num_issues INTEGER,
+    llm_calls_attempted INTEGER,
+    llm_calls_succeeded INTEGER  -- < attempted: some LLM batches were dropped (e.g. 429s)
 );
 CREATE TABLE issues (
     run_id TEXT,
@@ -108,6 +110,12 @@ FROM units u
 JOIN classifications c USING (run_id, unit_path);
 """
 
+
+# Columns added after the first schema; ALTERed onto older DBs when they are opened.
+_MIGRATIONS = (
+    "ALTER TABLE classifications ADD COLUMN IF NOT EXISTS llm_calls_attempted INTEGER",
+    "ALTER TABLE classifications ADD COLUMN IF NOT EXISTS llm_calls_succeeded INTEGER",
+)
 
 # Every table keyed by run_id -- deleting a run means clearing its rows in all of
 # them (there is no FK cascade in the schema).
@@ -174,6 +182,8 @@ def open_db(path: pathlib.Path, run_id: str | None):
         con.execute(_SCHEMA)
         con.execute(_EVAL_VIEW)
         return con, set(), False
+    for stmt in _MIGRATIONS:
+        con.execute(stmt)
     if run_id is None:
         return con, set(), False  # append a new run into the existing DB
     if not con.execute("SELECT 1 FROM runs WHERE run_id = ? LIMIT 1", [run_id]).fetchone():
@@ -271,7 +281,9 @@ def record_result(con, run_id: str, res: ScanResult, no_llm: bool) -> None:
     ok = res.scan_status == "ok"
     predicted = (res.risk_recommendation == MALICIOUS_RECOMMENDATION) if ok else None
     con.execute(
-        "INSERT INTO classifications VALUES (?,?,?,?,?,?,?,?,?,?)",
+        "INSERT INTO classifications (run_id, unit_path, classification, is_malicious, "
+        "risk_score, risk_severity, run_time, status, error, num_issues, "
+        "llm_calls_attempted, llm_calls_succeeded) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
         [
             run_id,
             u.unit_path,
@@ -283,6 +295,8 @@ def record_result(con, run_id: str, res: ScanResult, no_llm: bool) -> None:
             classification_status(res, no_llm),
             res.error_message,
             res.num_issues,
+            res.llm_calls_attempted,
+            res.llm_calls_succeeded,
         ],
     )
     for idx, issue in enumerate(res.issues):
@@ -337,3 +351,14 @@ def print_summary(con, run_id: str) -> None:
     total = tp + fp + tn + fn
     if total:
         print(f"  accuracy  = {(tp + tn) / total:.3f}  (over {total} scored units)")
+    partial = con.execute(
+        "SELECT count(*) FROM classifications WHERE run_id = ? "
+        "AND llm_calls_succeeded < llm_calls_attempted",
+        [run_id],
+    ).fetchone()[0]
+    if partial:
+        print(
+            f"  {partial} scan(s) lost some LLM calls (llm_calls_succeeded < "
+            "llm_calls_attempted); a jump here vs. the base run suggests throttling -- "
+            "lower --workers"
+        )

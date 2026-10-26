@@ -61,3 +61,25 @@ def test_delete_runs_noop_on_empty_id_list():
     _seed_run(con, "x")
     delete_runs(con, [])
     assert con.execute("SELECT count(*) FROM runs").fetchone()[0] == 1
+
+
+def test_open_db_adds_llm_call_columns_to_an_older_db(tmp_path):
+    from benchmark.db import open_db
+
+    path = tmp_path / "old.duckdb"
+    con = duckdb.connect(str(path))
+    con.execute(
+        _SCHEMA.replace(",\n    llm_calls_attempted INTEGER", "").replace(
+            ",\n    llm_calls_succeeded INTEGER  -- < attempted: some LLM batches were dropped (e.g. 429s)",
+            "",
+        )
+    )
+    con.execute(_EVAL_VIEW)
+    assert "llm_calls_attempted" not in {
+        r[0] for r in con.execute("DESCRIBE classifications").fetchall()
+    }
+    con.close()
+
+    con, _, _ = open_db(path, None)
+    cols = {r[0] for r in con.execute("DESCRIBE classifications").fetchall()}
+    assert {"llm_calls_attempted", "llm_calls_succeeded"} <= cols

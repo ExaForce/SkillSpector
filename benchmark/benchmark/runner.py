@@ -75,6 +75,8 @@ def _report_to_result(unit: Unit, report: dict, elapsed: float) -> ScanResult:
         num_issues=len(issues),
         llm_requested=bool(meta.get("llm_requested")),
         llm_available=bool(meta.get("llm_available")),
+        llm_calls_attempted=meta.get("llm_calls_attempted"),
+        llm_calls_succeeded=meta.get("llm_calls_succeeded"),
         issues=issues,
         components=report.get("components", []) or [],
     )
