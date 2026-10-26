@@ -9,7 +9,7 @@ runs in a DB into a PR-ready markdown summary.
 
 Usage:
     benchmark /path/to/MalSkillBench/Dataset
-    benchmark .../Dataset/Skills/malware --limit 50 --workers 8
+    benchmark .../Dataset/Skills/malware --limit 50 --workers 16
     benchmark .../Dataset --no-llm                       # static analysis only
     benchmark .../Dataset -o out.duckdb --run-id abc123   # extend run abc123
     report out.duckdb <run>                    # single-run summary
@@ -31,7 +31,7 @@ from types import SimpleNamespace
 import click
 from tqdm import tqdm
 
-from .config import SCAN_TIMEOUT_SECONDS, configure_run
+from .config import SCAN_TIMEOUT_SECONDS, configure_run, default_workers
 from .dataset_handler import discover
 from .db import (
     delete_runs,
@@ -94,7 +94,13 @@ from .utils import quiet_logging
     help="cap units PER GROUP (a unit's parent directory, e.g. Skills/malware "
     "vs Skills/benign); 0 = no cap",
 )
-@click.option("--workers", type=int, default=8, show_default=True, help="concurrent scan processes")
+@click.option(
+    "--workers",
+    type=click.IntRange(min=1),
+    default=None,
+    help="concurrent scan processes (default: sized from this machine's RAM and CPUs, "
+    "capped at 96). Lower it if the summary reports scans that lost LLM calls.",
+)
 @click.option(
     "--max-tasks-per-child",
     type=int,
@@ -191,6 +197,9 @@ def _run_benchmark(args: SimpleNamespace) -> int:
     if args.dataset and not args.from_run:
         print("ERROR: --dataset only applies with --from-run")
         return 2
+
+    if args.workers is None:
+        args.workers = default_workers()
 
     gen_id = uuid.uuid4().hex[:12]
     out_path = pathlib.Path(args.output or f"benchmark_{gen_id}.duckdb").resolve()

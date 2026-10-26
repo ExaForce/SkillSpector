@@ -35,7 +35,7 @@ Or from inside this directory:
 cd benchmark
 uv run benchmark /path/to/MalSkillBench/Dataset
 uv run benchmark .../Dataset/Prompts/indirect-injection -o out.duckdb
-uv run benchmark .../Dataset/Skills/malware --limit 50 --workers 8
+uv run benchmark .../Dataset/Skills/malware --limit 50 --workers 16
 uv run benchmark .../Dataset --no-llm        # static analysis only
 ```
 
@@ -70,7 +70,7 @@ uv run remove-run results.duckdb ab12 9f3 c7 --yes   # several at once, no promp
 | `--no-llm` | static analysis only (no LLM calls) |
 | `--categories` | comma-separated unit categories to scan; default `skill,code`. **Prompts are excluded by default** — they're raw prompt-injection samples, not the repo config files this tool classifies (PI embedded in a skill is still covered via the `skill` units). Pass `--categories skill,code,prompt` to include them. |
 | `--limit N` | cap units **per group** — a unit's parent directory (e.g. `--limit 20` on `Dataset/Skills` keeps 20 from `Skills/malware` *and* 20 from `Skills/benign`); 0 = no cap |
-| `--workers N` | concurrent scan processes (default 8) |
+| `--workers N` | concurrent scan processes; default is sized from the machine (half the RAM at 256 MB per worker, 6 per CPU, capped at 96 -- 96 on a 48 GB / 16-core Mac). Measured steady-state on the same units: 32 workers ~2 units/s, 64 ~2.6-3.0, 96 ~3.7, 128 ~3.1 -- past ~96 Bedrock queues calls (p99 wait ~46s) and slow scans approach `--timeout`. If the run summary reports scans that **lost LLM calls**, the provider is throttling: lower it. |
 | `--run-id` | extend an existing run instead of starting a new one (requires `-o`); re-scans only its unfinished units and appends into the same run |
 | `--from-run` | re-scan the units of a previous run instead of a `DATASET_PATH` (requires `-o`; reads that run from the `-o` DB and appends a new run there). Omit the positional path. |
 | `--failures-only` | with `--from-run`, re-scan only that run's **failed** units (FN, FP, timeouts, and errors) |
