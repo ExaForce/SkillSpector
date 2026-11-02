@@ -26,6 +26,10 @@ which does invert one of them — marked conditionally below, so the run stays
 green and strictly checked in that mode too. Fork-side coverage lives in
 ``tests/exaforce/test_patches.py``.
 
+``exaforce/_analyzer_registry`` appends fork analyzers to ``ANALYZER_NODE_IDS``
+on every import, so upstream's exact-list registry assertion is inverted in all
+modes.
+
 Keep this list in sync with ``docs/superpowers/EXPECTED_TEST_FAILURES.md``.
 """
 
@@ -43,12 +47,22 @@ _NO_FLOOR_REASON = (
     "including LLM-backed ones; upstream asserts the floor"
 )
 
+_ANALYZER_REGISTRY_REASON = (
+    "exaforce _analyzer_registry appends fork analyzers (exaforce_hidden_text, and "
+    "later P3-P5 nodes) to ANALYZER_NODE_IDS; upstream asserts the fixed upstream list"
+)
+
 _SCHEMA_PRUNING = (
     "tests/nodes/test_llm_analyzer_base.py::TestLLMAnalysisResult::test_to_finding",
     "tests/nodes/test_llm_analyzer_base.py::TestLLMAnalysisResult::test_model_dump",
     "tests/nodes/test_llm_analyzer_base.py::TestMetaAnalyzerResult::test_intent_validation",
     "tests/nodes/test_semantic_quality_policy.py::TestFixtureMaliciousSkill"
     "::test_malicious_skill_findings_preserve_metadata",
+)
+
+_ANALYZER_REGISTRY = (
+    "tests/nodes/analyzers/test_registry.py::TestAnalyzerRegistry"
+    "::test_analyzer_node_ids_match_expected",
 )
 
 # Only inverted by the fully-empty floor; passes under "semantic" and "upstream".
@@ -63,6 +77,7 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
     from skillspector.exaforce._filter_patches import resolve_mode
 
     expected = dict.fromkeys(_SCHEMA_PRUNING, _SCHEMA_PRUNING_REASON)
+    expected.update(dict.fromkeys(_ANALYZER_REGISTRY, _ANALYZER_REGISTRY_REASON))
     if resolve_mode() == "none":
         expected.update(dict.fromkeys(_NO_FLOOR_ONLY, _NO_FLOOR_REASON))
     for item in items:

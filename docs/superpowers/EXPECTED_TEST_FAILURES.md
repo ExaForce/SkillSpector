@@ -28,6 +28,18 @@ Each fails with an `AssertionError` (or `KeyError`) about a pruned key
 - `tests/nodes/test_llm_analyzer_base.py::TestMetaAnalyzerResult::test_intent_validation`
 - `tests/nodes/test_semantic_quality_policy.py::TestFixtureMaliciousSkill::test_malicious_skill_findings_preserve_metadata`
 
+## Analyzer registry (`exaforce/_analyzer_registry.py`)
+
+`register_analyzer` appends fork analyzers (`exaforce_hidden_text`, and later
+fork nodes) to `nodes.analyzers.ANALYZER_NODE_IDS` on every import; each is
+flag-gated inside its wrapper, so registration is unconditional. Upstream's
+exact-list assertion therefore fails in every mode with an `AssertionError`
+("Left contains one more item: 'exaforce_hidden_text'"):
+
+- `tests/nodes/analyzers/test_registry.py::TestAnalyzerRegistry::test_analyzer_node_ids_match_expected`
+
+The other two registry tests (every ID has a node, no extra nodes) still pass.
+
 ## Severity floor (`exaforce/_filter_patches.py`) — none in the default mode
 
 `_filter_patches` lifts the CRITICAL/HIGH floor only for a finding that both
