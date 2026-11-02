@@ -23,6 +23,7 @@ benchmark = "benchmark.main:run"
 report = "benchmark.main:report"
 remove-run = "benchmark.main:remove_run"
 health = "benchmark.health:main"
+replay = "benchmark.replay:main"
 
 [dependency-groups]
 dev = ["pytest>=8"]
