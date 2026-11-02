@@ -12,6 +12,7 @@ at import time rather than silently going stale.
 from __future__ import annotations
 
 from . import (
+    _build_context_patches,
     _filter_patches,
     _prompt_patches,
     _sampling_patches,
@@ -32,4 +33,5 @@ def apply_patches() -> None:
     _sampling_patches.apply()
     _filter_patches.apply()
     _score_patches.apply()
+    _build_context_patches.apply()
     _PATCHED = True
