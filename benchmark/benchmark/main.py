@@ -65,6 +65,13 @@ from .utils import quiet_logging
     "timeouts, and errors) -- a fast check of whether a change fixes them.",
 )
 @click.option(
+    "--units-file",
+    type=click.Path(exists=True, dir_okay=False),
+    help="scan only the units listed in this file (one unit_path per line; '#' comments "
+    "and blank lines ignored). Works with DATASET_PATH or --from-run; file order is kept. "
+    "Cannot be combined with --failures-only.",
+)
+@click.option(
     "--dataset",
     help="with --from-run, override the dataset path recorded for the source run "
     "(use if the MalSkillBench checkout has moved).",
@@ -178,7 +185,33 @@ def _load_run_spec(
         con.close()
 
 
+def read_units_file(path: str | os.PathLike) -> list[str]:
+    """Read unit_paths, one per line; skip blanks and ``#`` comments; dedupe keeping order."""
+    seen: dict[str, None] = {}
+    for line in pathlib.Path(path).read_text().splitlines():
+        line = line.strip()
+        if line and not line.startswith("#"):
+            seen.setdefault(line, None)
+    return list(seen)
+
+
+def select_units(units: list, wanted: list[str]) -> tuple[list, int]:
+    """Pick the units named in ``wanted`` (unit_path), in ``wanted`` order.
+
+    Returns (selected, number of wanted paths not present in ``units``).
+    """
+    by_path = {u.unit_path: u for u in units}
+    selected = [by_path[p] for p in wanted if p in by_path]
+    return selected, len(wanted) - len(selected)
+
+
+def print_units_file_selection(selected: int, missing: int) -> None:
+    print(f"--units-file: selected {selected} units ({missing} not found)")
+
+
 def _run_benchmark(args: SimpleNamespace) -> int:
+    if getattr(args, "units_file", None) and args.failures_only:
+        raise click.UsageError("--failures-only cannot be combined with --units-file")
     if bool(args.dataset_path) == bool(args.from_run):
         print("ERROR: pass either a DATASET_PATH or --from-run <run_id> (exactly one)")
         return 2
@@ -247,6 +280,10 @@ def _run_benchmark(args: SimpleNamespace) -> int:
         units = [u for u in units if u.category in selected]
         if dropped:
             print(f"excluded {dropped} unit(s) outside --categories={args.categories}")
+
+    if getattr(args, "units_file", None):
+        units, missing = select_units(units, read_units_file(args.units_file))
+        print_units_file_selection(len(units), missing)
 
     if args.limit:
         per_group: dict[str, int] = {}
