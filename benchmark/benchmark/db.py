@@ -7,7 +7,10 @@ that labels every scan TP/FP/TN/FN/ERROR.
 
 from __future__ import annotations
 
+import json
 import pathlib
+import subprocess
+from collections.abc import Mapping
 
 from .config import MALICIOUS_RECOMMENDATION
 from .models import ScanResult
@@ -24,7 +27,8 @@ CREATE TABLE runs (
     use_llm BOOLEAN,
     workers INTEGER,
     sample_limit INTEGER,
-    description TEXT
+    description TEXT,
+    config_json TEXT
 );
 CREATE TABLE units (
     run_id TEXT,
@@ -69,7 +73,8 @@ CREATE TABLE issues (
     start_line INTEGER,
     end_line INTEGER,
     intent TEXT,
-    explanation TEXT
+    explanation TEXT,
+    tags VARCHAR[]  -- e.g. 'llm-unconfirmed': kept by the severity floor, not meta-confirmed
 );
 CREATE TABLE components (
     run_id TEXT,
@@ -115,7 +120,45 @@ JOIN classifications c USING (run_id, unit_path);
 _MIGRATIONS = (
     "ALTER TABLE classifications ADD COLUMN IF NOT EXISTS llm_calls_attempted INTEGER",
     "ALTER TABLE classifications ADD COLUMN IF NOT EXISTS llm_calls_succeeded INTEGER",
+    "ALTER TABLE issues ADD COLUMN IF NOT EXISTS tags VARCHAR[]",
+    "ALTER TABLE runs ADD COLUMN IF NOT EXISTS config_json TEXT",
 )
+
+_SECRET_MARKERS = ("KEY", "TOKEN", "SECRET", "PASSWORD")
+
+
+def config_snapshot(environ: Mapping[str, str], git_sha: str) -> str:
+    """JSON of the run's git sha plus its SKILLSPECTOR_* / MODEL_OVERRIDE env, minus secrets."""
+    env = {
+        k: v
+        for k, v in sorted(environ.items())
+        if (k.startswith("SKILLSPECTOR_") or k == "MODEL_OVERRIDE")
+        and not any(m in k for m in _SECRET_MARKERS)
+    }
+    return json.dumps({"git_sha": git_sha, "env": env})
+
+
+def current_git_sha() -> str:
+    """Short HEAD sha of the repo holding this module, ``-dirty`` if ``src`` has changes.
+
+    Resolved from this file's path, not the cwd. Returns "unknown" if git fails.
+    """
+    repo_root = pathlib.Path(__file__).resolve().parents[2]
+    try:
+        sha = subprocess.run(
+            ["git", "-C", str(repo_root), "rev-parse", "--short", "HEAD"],
+            capture_output=True, text=True, check=True, timeout=30,
+        ).stdout.strip()  # fmt: skip
+        dirty = subprocess.run(
+            ["git", "-C", str(repo_root), "status", "--porcelain", "--", "src"],
+            capture_output=True, text=True, check=True, timeout=30,
+        ).stdout.strip()  # fmt: skip
+    except (OSError, subprocess.SubprocessError):
+        return "unknown"
+    if not sha:
+        return "unknown"
+    return f"{sha}-dirty" if dirty else sha
+
 
 # Every table keyed by run_id -- deleting a run means clearing its rows in all of
 # them (there is no FK cascade in the schema).
@@ -302,7 +345,9 @@ def record_result(con, run_id: str, res: ScanResult, no_llm: bool) -> None:
     for idx, issue in enumerate(res.issues):
         loc = issue.get("location", {}) or {}
         con.execute(
-            "INSERT INTO issues VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO issues (run_id, unit_path, issue_index, rule_id, category, pattern, "
+            "severity, confidence, file, start_line, end_line, intent, explanation, tags) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             [
                 run_id,
                 u.unit_path,
@@ -317,6 +362,7 @@ def record_result(con, run_id: str, res: ScanResult, no_llm: bool) -> None:
                 loc.get("end_line"),
                 issue.get("intent"),
                 (issue.get("explanation") or "")[:4000],
+                list(issue.get("tags") or []),
             ],
         )
     for comp in res.components:

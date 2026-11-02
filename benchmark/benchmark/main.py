@@ -34,6 +34,8 @@ from tqdm import tqdm
 from .config import SCAN_TIMEOUT_SECONDS, configure_run, default_workers
 from .dataset_handler import discover
 from .db import (
+    config_snapshot,
+    current_git_sha,
     delete_runs,
     open_db,
     print_summary,
@@ -304,7 +306,9 @@ def _run_benchmark(args: SimpleNamespace) -> int:
         run_id = gen_id
         print(f"starting run {run_id}")
         con.execute(
-            "INSERT INTO runs VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO runs (run_id, started_at, finished_at, dataset_path, provider, model, "
+            "region, use_llm, workers, sample_limit, description, config_json) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
             [
                 run_id,
                 datetime.now(UTC),
@@ -317,6 +321,7 @@ def _run_benchmark(args: SimpleNamespace) -> int:
                 args.workers,
                 args.limit or None,
                 args.description,
+                config_snapshot(os.environ, current_git_sha()),
             ],
         )
         units_to_scan = units
