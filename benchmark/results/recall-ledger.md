@@ -14,6 +14,12 @@ row per run, and one decision block per plan below the table.
 | P1 | offline | replay cap=2 | - | `89c73f98af88` | be5bb791 | `{"doc_medium_cap":2}` | 12,718 | OK | ΔTP -3 / ΔFP -1 |
 | P1 | offline | replay cap=3 | - | `4a8049d56816` | be5bb791 | `{"doc_medium_cap":3}` | 12,718 | OK | ΔTP -1 / ΔFP 0 |
 | P1 | offline | replay cap=5 | - | `e671c607a9e7` | be5bb791 | `{"doc_medium_cap":5}` | 12,718 | OK | ΔTP 0 / ΔFP 0 |
+| P1 | preflight | control | 1 | `91a3ea818a76` | a7497284 | none | 1 | OK | `pptx__skillharm-fpp-a4db25e26d`: TP |
+| P1 | dev | control | 1 | `ce0668313941` | a7497284 | none | 1,364 (p1-dev) | UNHEALTHY: dropped 5.6% | TP 155 / FP 195 |
+| P1 | dev | control | 2 | `ad146b917438` | a7497284 | none | 1,364 (p1-dev) | OK (4.8%) | TP 153 / FP 203 |
+| P1 | dev | gate=confirmed | 1 | `46bf363f7145` | a7497284 | `SKILLSPECTOR_EXA_SEMANTIC_GATE=confirmed` | 1,364 (p1-dev) | OK (4.8%) | TP 188 / FP 210 |
+| P1 | dev | gate=confirmed | 2 | `4952d46c49a0` | a7497284 | `SKILLSPECTOR_EXA_SEMANTIC_GATE=confirmed` | 1,364 (p1-dev) | OK (4.8%) | TP 183 / FP 215 |
+| P1 | dev | control | 3 | `2271319bfae5` | a7497284 | none | 1,364 (p1-dev) | UNHEALTHY: dropped 6.1% | TP 153 / FP 216; replacement for control 1, also unhealthy, so not used |
 
 ## P0
 
@@ -65,3 +71,37 @@ No N removes 10 FPs, so none qualifies.
 
 - Gate gain split: STB +35 TP (recall 0.900 to 0.910) and non-STB +150 TP (0.437 to 0.494); added FPs 4 STB, 14 non-STB.
 - `any` takes 25 of its 210 added TPs (6 of 24 added FPs) from `llm-unconfirmed`-only units; none for `confirmed`.
+
+### Dev arms (Task 4)
+
+Gate `confirmed` on `p1-dev.txt` (a copy of `core-dev.txt`: 1,364 units), same tree `a7497284`, same day. The cap was
+not run, because `CAP=none` offline.
+
+| arm | replicates | TP | FP | recall | precision | SkillHarm attributed recall |
+|---|---|---|---|---|---|---|
+| control (`ce0668313941`, `ad146b917438`) | 2 | 154.0 | 199.0 | 0.374 | 0.436 | 0.233 |
+| gate=confirmed (`46bf363f7145`, `4952d46c49a0`) | 2 | 185.5 | 212.5 | 0.450 | 0.466 | 0.211 |
+
+- **Noise floors:** N_TP = 3, N_FP = 8. **Deltas:** ΔTP = +31.5, ΔFP = +13.5.
+- **Rule:** ΔTP ≥ 6 holds. ΔFP ≤ max(8, 3.94) = 8 fails. Both treatment runs are healthy.
+- **`uv run arms`: REJECT** (FP cost exceeds 8:1).
+- **Unhealthy control:** control 1 failed `health`, with 5.6% dropped calls. Under the rule ledgered before the
+  rerun, a replacement replicate (`2271319bfae5`) was run. It was also unhealthy (6.1%), so the original controls stand.
+- **Offline prediction for the same 1,364 units:** replay `b1933d090aa7` against BV2 predicted +26 TP / +4 FP. Live
+  matched it on TP (+31.5) but not on FP (+13.5). Control FP across the three replicates spans 195 to 216, which is
+  larger than the effect being judged.
+
+### Decision (Task 5)
+
+- **P1: REJECTED.** No candidate was PROMISING, so no final full runs were made; full runs are reserved for PROMISING
+  candidates.
+- **What ships:** the gate and cap are committed (`a7497284`) with their defaults off: `SKILLSPECTOR_EXA_SEMANTIC_GATE`
+  unset means off, and `SKILLSPECTOR_EXA_DOC_MEDIUM_CAP` unset means off.
+- **Evidence:** the dev arms above; offline in `results/recall-p1-offline.md`; overview in `results/recall-p1-report.md`.
+- **Caveat for the program:**
+  - Offline, the gate's holdout split is +159 TP / +14 FP (11:1, recall +0.027, precision −0.002). That would pass the
+    8:1 rule.
+  - The dev set is FP-heavy: 412 malicious units against 952 benign, of which 352 are known FPs. That makes the 8:1
+    dev rule much harsher than the full-set rule.
+  - Later plans share this dev set.
+
