@@ -14,6 +14,18 @@
 | started | {{ run.started_at.strftime('%Y-%m-%d %H:%M') if run.started_at else '—' }} |
 | workers | {{ run.workers | num }} |
 
+## Health
+
+{% if extras.health %}
+> [!WARNING]
+> **Health: UNHEALTHY** — this run may be poisoned or degraded; treat its numbers with care:
+{% for problem in extras.health %}
+> - {{ problem }}
+{% endfor %}
+{% else %}
+**Health: OK**
+{% endif %}
+
 ## Outcomes
 
 Every scanned unit is exactly one of these, so the rows **conserve to the total**.
@@ -43,6 +55,74 @@ Rates over units that **produced a verdict** (errors excluded — scored {{ run.
 | F1 | {{ run.confusion.f1 | metric }} `{{ run.confusion.f1 | bar(1.0) }}` |
 | accuracy | {{ run.confusion.accuracy | metric }} `{{ run.confusion.accuracy | bar(1.0) }}` |
 
+## SkillTrustBench vs rest
+
+Recall over **malicious** units, split by whether `_external_labels.jsonl` attributes the unit to SkillTrustBench.
+
+{% if extras.stb_split is none %}
+_labels not found_ (`_external_labels.jsonl` is missing).
+{% else %}
+| subset | n | TP | FN | errors | recall |
+|---|---|---|---|---|---|
+{% for row in extras.stb_split %}
+| {{ row.key }} | {{ row.n }} | {{ row.tp }} | {{ row.fn }} | {{ row.errors }} | {{ row.recall | metric }} |
+{% endfor %}
+{% endif %}
+
+## Label-validity tiers
+
+{% if extras.validity_tiers is none %}
+_labels not found_ (`_boundary_labels.jsonl` is missing).
+{% else %}
+Raw counts over the {{ extras.validity_tiers | sum(attribute='n') }} annotated malicious units in this run (from `_boundary_labels.jsonl`, the 412-unit annotation sample), **unweighted** — not representative of the corpus mix.
+`working` = CORRECT; `intent` = BROKEN, UNVERIFIABLE; `not_malicious` = WEAK, MISLABELED.
+
+| tier | n | TP | FN | errors | recall |
+|---|---|---|---|---|---|
+{% for row in extras.validity_tiers %}
+| {{ row.key }} | {{ row.n }} | {{ row.tp }} | {{ row.fn }} | {{ row.errors }} | {{ row.recall | metric }} |
+{% endfor %}
+{% endif %}
+
+## SkillHarm attributed recall
+
+{% if extras.skillharm_attributed is none %}
+_labels not found_ (`_skillharm_injected.jsonl` is missing).
+{% else %}
+{% set sh = extras.skillharm_attributed %}
+A caught SkillHarm unit is **attributed** when at least one MEDIUM+ issue points at a file the attack injected; the rest were flagged for something else.
+
+| metric | value |
+|---|---|
+| units (TP + FN) | {{ sh.units }} |
+| verdict TP | {{ sh.verdict_tp }} |
+| attributed TP | {{ sh.attributed_tp }} |
+| recall | {{ sh.recall | metric }} |
+| attributed recall | {{ sh.attributed_recall | metric }} |
+{% endif %}
+
+## Benign FP rate by package size
+
+Benign units bucketed by component count; FP rate = FP ÷ (FP + TN), errors excluded. `(none)` = no components recorded (usually a scan that errored).
+
+| components | n | FP | TN | errors | FP rate |
+|---|---|---|---|---|---|
+{% for row in extras.fp_by_size %}
+| {{ row.key }} | {{ row.n }} | {{ row.fp }} | {{ row.tn }} | {{ row.errors }} | {{ row.fp | pct(row.fp + row.tn) }} |
+{% endfor %}
+
+{% if extras.splits is not none %}
+## Splits
+
+Per-split outcomes from `--split-file`; units not listed there are `unassigned`.
+
+| split | n | FP | FN | errors | recall |
+|---|---|---|---|---|---|
+{% for row in extras.splits %}
+| {{ row.key }} | {{ row.n }} | {{ row.fp }} | {{ row.fn }} | {{ row.errors }} | {{ row.recall | metric }} |
+{% endfor %}
+
+{% endif %}
 ## Timing
 
 Per-scan `run_time` stats. **Total scan time** is the sum (total work across all

@@ -1,3 +1,25 @@
+{% macro rate_table(rows, col, rate, rate_label, higher_is_better=true) %}
+
+| {{ col }} | base n | head n | base {{ rate_label }} | head {{ rate_label }} | Δ |
+|---|---|---|---|---|---|
+{% for row in rows %}
+{% set b = row.base[rate] if row.base else none %}
+{% set h = row.head[rate] if row.head else none %}
+| {{ row.key }} | {{ row.base.n if row.base else 0 }} | {{ row.head.n if row.head else 0 }} | {{ b | metric }} | {{ h | metric }} | {{ (h | sub(b)) | delta(higher_is_better=higher_is_better) }} |
+{% endfor %}
+{% endmacro %}
+{% macro missing_note(name, file) %}
+{% if base_extras[name] is none and head_extras[name] is none %}
+_labels not found_ (`{{ file }}` is missing for both runs).
+{% elif base_extras[name] is none %}
+<sub>base: labels not found (`{{ file }}` is missing); its column is empty.</sub>
+
+{% elif head_extras[name] is none %}
+<sub>head: labels not found (`{{ file }}` is missing); its column is empty.</sub>
+
+{% endif %}
+{% endmacro %}
+{% macro health_cell(problems) %}{{ 'Health: OK' if not problems else '⚠️ UNHEALTHY: ' ~ (problems | join('; ')) }}{% endmacro %}
 {% macro moved_table(items, n_total) %}
 
 | unit | base → head | type | malware |
@@ -33,6 +55,13 @@
 | units (total) | {{ base.confusion.total | num }} | {{ head.confusion.total | num }} |
 | started | {{ base.started_at.strftime('%Y-%m-%d %H:%M') if base.started_at else '—' }} | {{ head.started_at.strftime('%Y-%m-%d %H:%M') if head.started_at else '—' }} |
 | workers | {{ base.workers | num }} | {{ head.workers | num }} |
+
+## Health
+
+| run | health |
+|---|---|
+| base · `{{ label_base }}` | {{ health_cell(base_extras.health) }} |
+| head · `{{ label_head }}` | {{ health_cell(head_extras.health) }} |
 
 ## Outcomes
 
@@ -90,6 +119,53 @@ Over the **{{ cmp.coverage.both }}** unit(s) scanned by both runs{% if cmp.cover
 </details>
 {% endif %}
 
+## SkillTrustBench vs rest
+
+Recall over **malicious** units, split by whether `_external_labels.jsonl` attributes the unit to SkillTrustBench.
+
+{{ missing_note('stb_split', '_external_labels.jsonl') }}
+{% if merged_extras.stb_split is not none %}
+{{ rate_table(merged_extras.stb_split, 'subset', 'recall', 'recall') }}
+{% endif %}
+
+## Label-validity tiers
+
+{{ missing_note('validity_tiers', '_boundary_labels.jsonl') }}
+{% if merged_extras.validity_tiers is not none %}
+Raw counts over the annotated malicious units in `_boundary_labels.jsonl` (the 412-unit annotation sample), **unweighted** — not representative of the corpus mix.
+`working` = CORRECT; `intent` = BROKEN, UNVERIFIABLE; `not_malicious` = WEAK, MISLABELED.
+{{ rate_table(merged_extras.validity_tiers, 'tier', 'recall', 'recall') }}
+{% endif %}
+
+## SkillHarm attributed recall
+
+{% set bsh = base_extras.skillharm_attributed %}
+{% set hsh = head_extras.skillharm_attributed %}
+{{ missing_note('skillharm_attributed', '_skillharm_injected.jsonl') }}
+{% if bsh is not none or hsh is not none %}
+A caught SkillHarm unit is **attributed** when at least one MEDIUM+ issue points at a file the attack injected; the rest were flagged for something else.
+
+| metric | base | head | Δ |
+|---|---|---|---|
+| units (TP + FN) | {{ bsh.units if bsh else '—' }} | {{ hsh.units if hsh else '—' }} | {{ ((hsh.units if hsh else none) | sub(bsh.units if bsh else none)) | signed }} |
+| verdict TP | {{ bsh.verdict_tp if bsh else '—' }} | {{ hsh.verdict_tp if hsh else '—' }} | {{ ((hsh.verdict_tp if hsh else none) | sub(bsh.verdict_tp if bsh else none)) | signed }} |
+| attributed TP | {{ bsh.attributed_tp if bsh else '—' }} | {{ hsh.attributed_tp if hsh else '—' }} | {{ ((hsh.attributed_tp if hsh else none) | sub(bsh.attributed_tp if bsh else none)) | signed }} |
+| recall | {{ (bsh.recall if bsh else none) | metric }} | {{ (hsh.recall if hsh else none) | metric }} | {{ ((hsh.recall if hsh else none) | sub(bsh.recall if bsh else none)) | delta }} |
+| attributed recall | {{ (bsh.attributed_recall if bsh else none) | metric }} | {{ (hsh.attributed_recall if hsh else none) | metric }} | {{ ((hsh.attributed_recall if hsh else none) | sub(bsh.attributed_recall if bsh else none)) | delta }} |
+{% endif %}
+
+## Benign FP rate by package size
+
+Benign units bucketed by component count; FP rate = FP ÷ (FP + TN), errors excluded. `(none)` = no components recorded (usually a scan that errored).
+{{ rate_table(merged_extras.fp_by_size, 'components', 'fp_rate', 'FP rate', higher_is_better=false) }}
+
+{% if merged_extras.splits is not none %}
+## Splits
+
+Per-split recall from `--split-file`; units not listed there are `unassigned`.
+{{ rate_table(merged_extras.splits, 'split', 'recall', 'recall') }}
+
+{% endif %}
 ## Timing
 
 Per-scan `run_time` stats. **Total scan time** is the sum (total work across all

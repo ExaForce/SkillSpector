@@ -444,7 +444,12 @@ def _run_benchmark(args: SimpleNamespace) -> int:
     default=None,
     help="max regression/fix rows to list, comparison only (default: 25)",
 )
-def report(db_path, run, base, output, label, base_label, top):
+@click.option(
+    "--split-file",
+    type=click.Path(exists=True, dir_okay=False, path_type=pathlib.Path),
+    help="TSV of unit_path<TAB>split; adds a per-split section (unlisted units: unassigned)",
+)
+def report(db_path, run, base, output, label, base_label, top, split_file):
     """Summarize a benchmark run, or compare it against a base run.
 
     DB_PATH is a benchmark DuckDB and RUN is a run id in it (a unique prefix is
@@ -468,6 +473,7 @@ def report(db_path, run, base, output, label, base_label, top):
             db_path=db_path,
             generated_at=datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC"),
             top=DEFAULT_TOP if top is None else top,
+            split_file=split_file,
         )
     finally:
         con.close()

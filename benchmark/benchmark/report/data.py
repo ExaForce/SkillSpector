@@ -105,6 +105,12 @@ class Breakdown:
         d = self.tp + self.fn
         return self.tp / d if d else None
 
+    @property
+    def fp_rate(self) -> float | None:
+        """Share of benign units with a verdict that were flagged (errors excluded)."""
+        d = self.fp + self.tn
+        return self.fp / d if d else None
+
 
 @dataclass
 class RunReport:
