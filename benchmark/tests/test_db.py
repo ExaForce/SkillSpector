@@ -169,3 +169,29 @@ def test_current_git_sha_is_nonempty_string():
     from benchmark.db import current_git_sha
 
     assert current_git_sha()
+
+
+def test_line_or_none_coercion():
+    from benchmark.db import _line_or_none
+
+    for kept in (0, 42, 2**31 - 1):
+        assert _line_or_none(kept) == kept
+    assert _line_or_none(12.0) == 12
+    assert _line_or_none("7") == 7
+    for bad in (None, 2**31, 9900000000000001, -1, True, "abc", float("nan"), 1.5, float("inf")):
+        assert _line_or_none(bad) is None, bad
+
+
+def test_record_result_stores_out_of_range_line_as_null():
+    from benchmark.db import record_result
+
+    con = _fresh_db()
+    scan = _scan_with_issue(None)
+    scan.issues[0]["location"] = {
+        "file": "SKILL.md",
+        "start_line": 9900000000000001,
+        "end_line": 5,
+    }
+    record_result(con, "r", scan, no_llm=False)
+    row = con.execute("SELECT start_line, end_line FROM issues WHERE run_id='r'").fetchone()
+    assert row == (None, 5)

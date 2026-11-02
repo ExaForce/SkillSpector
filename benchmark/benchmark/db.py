@@ -300,6 +300,26 @@ def delete_runs(con, run_ids: list[str]) -> None:
         raise
 
 
+def _line_or_none(value: object) -> int | None:
+    """Coerce a reported line number to an INT32-safe int, else None (stored as NULL)."""
+    if isinstance(value, bool):
+        return None
+    try:
+        if isinstance(value, int):
+            n = value
+        elif isinstance(value, float):
+            if not value.is_integer():
+                return None
+            n = int(value)
+        elif isinstance(value, str):
+            n = int(value.strip())
+        else:
+            return None
+    except (ValueError, OverflowError):
+        return None
+    return n if 0 <= n <= 2**31 - 1 else None
+
+
 def record_result(con, run_id: str, res: ScanResult, no_llm: bool) -> None:
     u = res.unit
     con.execute(
@@ -358,8 +378,8 @@ def record_result(con, run_id: str, res: ScanResult, no_llm: bool) -> None:
                 issue.get("severity"),
                 issue.get("confidence"),
                 loc.get("file"),
-                loc.get("start_line"),
-                loc.get("end_line"),
+                _line_or_none(loc.get("start_line")),
+                _line_or_none(loc.get("end_line")),
                 issue.get("intent"),
                 (issue.get("explanation") or "")[:4000],
                 list(issue.get("tags") or []),
