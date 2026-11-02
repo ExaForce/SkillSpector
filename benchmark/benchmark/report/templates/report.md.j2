@@ -162,8 +162,15 @@ Benign units bucketed by component count; FP rate = FP ÷ (FP + TN), errors excl
 {% if merged_extras.splits is not none %}
 ## Splits
 
-Per-split recall from `--split-file`; units not listed there are `unassigned`.
+Per-split outcomes, recall and precision from `--split-file`; units not listed there are `unassigned`.
+
+| split | base n | head n | base TP | head TP | base FP | head FP | base TN | head TN | base FN | head FN |
+|---|---|---|---|---|---|---|---|---|---|---|
+{% for row in merged_extras.splits %}
+| {{ row.key }}{% for f in ('n', 'tp', 'fp', 'tn', 'fn') %} | {{ row.base[f] if row.base else 0 }} | {{ row.head[f] if row.head else 0 }}{% endfor %} |
+{% endfor %}
 {{ rate_table(merged_extras.splits, 'split', 'recall', 'recall') }}
+{{ rate_table(merged_extras.splits, 'split', 'precision', 'precision') }}
 
 {% endif %}
 ## Timing

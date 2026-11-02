@@ -116,10 +116,10 @@ Benign units bucketed by component count; FP rate = FP ÷ (FP + TN), errors excl
 
 Per-split outcomes from `--split-file`; units not listed there are `unassigned`.
 
-| split | n | FP | FN | errors | recall |
-|---|---|---|---|---|---|
+| split | n | TP | FP | TN | FN | errors | recall | precision |
+|---|---|---|---|---|---|---|---|---|
 {% for row in extras.splits %}
-| {{ row.key }} | {{ row.n }} | {{ row.fp }} | {{ row.fn }} | {{ row.errors }} | {{ row.recall | metric }} |
+| {{ row.key }} | {{ row.n }} | {{ row.tp }} | {{ row.fp }} | {{ row.tn }} | {{ row.fn }} | {{ row.errors }} | {{ row.recall | metric }} | {{ row.precision | metric }} |
 {% endfor %}
 
 {% endif %}

@@ -106,6 +106,11 @@ class Breakdown:
         return self.tp / d if d else None
 
     @property
+    def precision(self) -> float | None:
+        d = self.tp + self.fp
+        return self.tp / d if d else None
+
+    @property
     def fp_rate(self) -> float | None:
         """Share of benign units with a verdict that were flagged (errors excluded)."""
         d = self.fp + self.tn

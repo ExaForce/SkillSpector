@@ -279,3 +279,47 @@ def test_report_cli_split_file(tmp_path):
     assert result.exit_code == 0, result.output
     assert "## Splits" in result.output
     assert "| holdout |" in result.output
+
+
+_HOLDOUT_SPLIT = "".join(
+    f"{u}\tholdout\n"
+    for u in (
+        "Skills/malware/stb-a",  # TP
+        "Skills/malware/h1",  # TP
+        "Skills/malware/stb-b",  # FN (TP in r2)
+        "Skills/benign/b1",  # FP
+        "Skills/benign/b3",  # FP
+        "Skills/benign/stb-c",  # TN
+    )
+)
+
+
+def test_summary_splits_table_has_tp_tn_precision(tmp_path):
+    con = _db(tmp_path)
+    split = tmp_path / "split.tsv"
+    split.write_text(_HOLDOUT_SPLIT, encoding="utf-8")
+    holdout = _by_key(load_extras(con, "r1", split).splits)["holdout"]
+    assert (holdout.tp, holdout.fp, holdout.tn, holdout.fn) == (2, 2, 1, 1)
+    assert holdout.precision == 0.5
+    md = build_report(con, "r1", split_file=split)
+    assert "| split | n | TP | FP | TN | FN | errors | recall | precision |" in md
+    assert "| holdout | 6 | 2 | 2 | 1 | 1 | 0 | 0.667 | 0.500 |" in md
+
+
+def test_comparison_splits_table_has_precision(tmp_path):
+    con = _db(tmp_path)
+    _add_run(con, "r2", tmp_path / "Dataset", _UNITS)
+    con.execute(
+        "UPDATE classifications SET is_malicious = TRUE"
+        " WHERE run_id = 'r2' AND unit_path = 'Skills/malware/stb-b'"
+    )
+    split = tmp_path / "split.tsv"
+    split.write_text(_HOLDOUT_SPLIT, encoding="utf-8")
+    md = build_report(con, "r2", base="r1", split_file=split)
+    splits = md[md.index("## Splits") : md.index("## Timing")]
+    assert "base TP | head TP" in splits and "base TN | head TN" in splits
+    holdout = [line for line in splits.splitlines() if line.startswith("| holdout ")]
+    # Counts row (n, TP, FP, TN, FN per side), recall row, precision row.
+    assert "| holdout | 6 | 6 | 2 | 3 | 2 | 2 | 1 | 1 | 1 | 0 |" in holdout
+    assert any("0.667" in line and "1.000" in line for line in holdout)
+    assert any("0.500" in line and "0.600" in line for line in holdout)
