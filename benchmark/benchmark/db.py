@@ -321,6 +321,17 @@ def _line_or_none(value: object) -> int | None:
 
 
 def record_result(con, run_id: str, res: ScanResult, no_llm: bool) -> None:
+    """Record one scan result atomically: all rows land, or none do (error re-raised)."""
+    con.execute("BEGIN TRANSACTION")
+    try:
+        _record_result_rows(con, run_id, res, no_llm)
+    except BaseException:
+        con.execute("ROLLBACK")
+        raise
+    con.execute("COMMIT")
+
+
+def _record_result_rows(con, run_id: str, res: ScanResult, no_llm: bool) -> None:
     u = res.unit
     con.execute(
         "INSERT INTO units VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",

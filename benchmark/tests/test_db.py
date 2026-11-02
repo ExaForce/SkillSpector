@@ -195,3 +195,20 @@ def test_record_result_stores_out_of_range_line_as_null():
     record_result(con, "r", scan, no_llm=False)
     row = con.execute("SELECT start_line, end_line FROM issues WHERE run_id='r'").fetchone()
     assert row == (None, 5)
+
+
+def test_record_result_is_atomic_on_failure():
+    import pytest
+
+    from benchmark.db import record_result
+
+    con = _fresh_db()
+    good = _scan_with_issue(None)
+    bad = _scan_with_issue(None)
+    bad.issues = [dict(bad.issues[0]), {**bad.issues[0], "confidence": "high"}]
+    with pytest.raises(duckdb.Error):
+        record_result(con, "r", bad, no_llm=False)
+    for table in ("units", "classifications", "issues", "components"):
+        assert con.execute(f"SELECT count(*) FROM {table}").fetchone()[0] == 0, table
+    record_result(con, "r", good, no_llm=False)  # connection still usable
+    assert con.execute("SELECT count(*) FROM issues").fetchone()[0] == 1
