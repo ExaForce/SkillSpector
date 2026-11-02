@@ -85,18 +85,27 @@ not run, because `CAP=none` offline.
 - **Noise floors:** N_TP = 3, N_FP = 8. **Deltas:** ΔTP = +31.5, ΔFP = +13.5.
 - **Rule:** ΔTP ≥ 6 holds. ΔFP ≤ max(8, 3.94) = 8 fails. Both treatment runs are healthy.
 - **`uv run arms`: REJECT** (FP cost exceeds 8:1).
-- **Unhealthy control:** control 1 failed `health`, with 5.6% dropped calls. Under the rule ledgered before the
-  rerun, a replacement replicate (`2271319bfae5`) was run. It was also unhealthy (6.1%), so the original controls stand.
+- **Unhealthy control:** control 1 failed `health`, with 5.6% dropped calls. Under rule P1-R7, a replacement
+  replicate (`2271319bfae5`) was run. It was also unhealthy (6.1%), so the original controls stand.
+- **Rule P1-R7** (kept in the SDD progress log, not in this ledger; copied here): "An arm replicate that fails health
+  is replaced once by a fresh replicate in the same arm, same tree, same day; if the replacement is also unhealthy, the
+  original replicates stand. (Written after the first arms verdict was seen, before the replacement ran.)"
 - **Offline prediction for the same 1,364 units:** replay `b1933d090aa7` against BV2 predicted +26 TP / +4 FP. Live
   matched it on TP (+31.5) but not on FP (+13.5). Control FP across the three replicates spans 195 to 216, which is
   larger than the effect being judged.
 
 ### Decision (Task 5)
 
-- **P1: REJECTED.** No candidate was PROMISING, so no final full runs were made; full runs are reserved for PROMISING
-  candidates.
+- **P1: REJECTED.** No candidate was PROMISING, so no final full runs were made: the plan pre-registers its
+  candidates, non-PROMISING changes are dropped, and full runs are final acceptance for PROMISING candidates (P1-R8).
 - **What ships:** the gate and cap are committed (`a7497284`) with their defaults off: `SKILLSPECTOR_EXA_SEMANTIC_GATE`
   unset means off, and `SKILLSPECTOR_EXA_DOC_MEDIUM_CAP` unset means off.
+- **REJECT holds only for the first control pair** (r1 `ce0668313941` + r2 `ad146b917438`). With r2+r3 (N_FP 13,
+  ΔFP +3), r1+r3 (N_FP 21, ΔFP ≈ +7), or all three controls (mean FP ≈ 204.7, ΔFP ≈ +7.8 ≤ 8), the verdict would be
+  PROMISING. The unhealthy control r1 (5.6% dropped) likely biases control FP low (dropped LLM batches drop LLM
+  findings), so the recorded REJECT is probably pessimistic. The pre-registered outcome stands (ruling P1-R9:
+  re-pairing after seeing the replacement would be post-hoc selection). A human can overrule with the spec's full-run
+  acceptance test (one full control + one full `gate=confirmed` run, same day).
 - **Evidence:** the dev arms above; offline in `results/recall-p1-offline.md`; overview in `results/recall-p1-report.md`.
 - **Caveat for the program:**
   - Offline, the gate's holdout split is +159 TP / +14 FP (11:1, recall +0.027, precision −0.002). That would pass the
@@ -105,3 +114,13 @@ not run, because `CAP=none` offline.
     dev rule much harsher than the full-set rule.
   - Later plans share this dev set.
 
+### Handoffs to P2+
+
+- The gate/cap code is in `src/skillspector/exaforce/_score_patches.py`, flags default off.
+  `SKILLSPECTOR_EXA_GATE_RULES` defaults to `SSD-1,SSD-2,SSD-3,SSD-4,P2`; P2-P5 may extend it.
+- Replay vs classifier known difference: replay gates/caps the stored pre-dedup `issues`, while the classifier scores
+  `deduplicate(active_findings)`. Bounded on BV2: at most 1 unit at risk in `confirmed`, at most 3 in `any`.
+- The dev set is FP-heavy (412 malicious / 952 benign), so the 8:1 dev rule is harsher than the full-set ratio. Control
+  FP spread across same-day replicates was 21 (195–216), and dev LLM drop rates sat at 4.8–6.1%, right at the 5%
+  health threshold.
+- Suggestion (spec unchanged): pre-register a rule for unhealthy control replicates in the spec.

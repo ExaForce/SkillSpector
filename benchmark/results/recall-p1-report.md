@@ -8,21 +8,27 @@ ship committed with their defaults off.
    - ΔTP +31.5, ΔFP +13.5, against an allowance of max(N_FP 8, ΔTP/8 3.9) = 8.
    - `arms`: REJECT on FP cost.
 2. **Offline prediction against live**, same 1,364 units: +26 TP / +4 FP predicted, against +31.5 / +13.5 live.
-   - On the full set, offline gives +185 TP / +18 FP: recall +0.029 (0.712 → 0.741), precision −0.003.
+   - On the full set, offline gives +185 TP / +18 FP: recall +0.029 (0.712 → 0.741), precision −0.001 (0.9313 → 0.9305).
    - On the holdout split, offline gives +159 / +14: recall +0.027, precision −0.002.
 3. **Where the gain landed** (live, against control r2):
-   - Added TPs (60 and 56 per replicate) are mostly native-wild `malware` (24 and 26), then SkillHarm, Skill-Inject,
-     STB and MaliciousSkillBench.
-   - Gross TN→FP flips are 76 and 75, split between benign (44 and 41) and STB (30 and 30). Net FP moves only +7 / +12,
+   - Added TPs (60 and 56 per replicate): the largest single corpus is native-wild `malware` (24 and 26, 40–46%),
+     then SkillHarm, Skill-Inject, STB and MaliciousSkillBench.
+   - Gross TN→FP flips are 76 and 75, split between benign (44 and 41), STB (30 and 30), SkillHarm (2 and 2), and 1 MaliciousSkillBench and 1 Skill-Inject in r2. Net FP moves only +7 / +12,
      because just as many FPs flip back.
-   - Offline, the gain is 81% non-STB: STB +35, non-STB +150.
+   - Offline, in `confirmed` mode the gain is 81% non-STB (150 of 185): STB +35, non-STB +150.
 4. **`llm-unconfirmed` share of gate hits:** 0% by construction in `confirmed` mode. Under `any`, 25 of 210 added TPs
    and 6 of 24 added FPs would come from unconfirmed-only findings (offline).
 5. **Caveats:**
    - The verdict is fragile. Control FP across three replicates spans 195 to 216, which is wider than the +13.5 effect.
      Two of the three controls failed `health`, with 5.6% and 6.1% dropped LLM calls.
-   - The dev set is FP-heavy: 412 malicious units against 952 benign, 352 of them prior FPs. The 8:1 rule is
+   - The dev set is FP-heavy: 412 malicious units against 952 benign, 352 FPs of the original run `113b02ab497b` (203 in baseline-v2). The 8:1 rule is
      therefore harsher on dev than on the full set, where offline is about 10:1 and holdout about 11:1.
+   - **The REJECT holds only for the first control pair** (r1 `ce0668313941` + r2 `ad146b917438`). With r2+r3 (N_FP 13,
+     ΔFP +3), r1+r3 (N_FP 21, ΔFP ≈ +7), or all three controls (mean FP ≈ 204.7, ΔFP ≈ +7.8 ≤ 8), the verdict would be
+     PROMISING. The unhealthy control r1 (5.6% dropped) likely biases control FP low (dropped LLM batches drop LLM
+     findings), so the recorded REJECT is probably pessimistic. The pre-registered outcome stands (ruling P1-R9:
+     re-pairing after seeing the replacement would be post-hoc selection). A human can overrule with the spec's
+     full-run acceptance test (one full control + one full `gate=confirmed` run, same day).
    - SkillHarm attributed recall on dev is 0.233 → 0.211, about 2.5 of 116 units, which is noise.
 
 ## Dev arms (`uv run arms`)
@@ -50,14 +56,15 @@ Reasons:
 VERDICT: REJECT
 
 Control 1 (`ce0668313941`) is unhealthy (5.6% dropped) but is still in the table. Its replacement `2271319bfae5` was
-unhealthy too (6.1%), so under rule P1-R7, ledgered before the rerun, the original pair stands. All runs are in
+unhealthy too (6.1%), so under rule P1-R7 the original pair stands. The rule lives in the SDD progress log (not the ledger) and was written
+after the first arms verdict was seen, before the replacement ran; its text is copied into the ledger's Dev arms block. All runs are in
 `results/recall-ledger.md`.
 
 ---
 
 # Report 1: dev gate=confirmed r1 against dev control r2 (same day, same tree)
 
-The spec's first overview command needs full runs. P1 made none, because it rejected on dev, so this compares the
+The spec's first overview command needs full runs. P1 made none, because the plan pre-registers its candidates, non-PROMISING changes are dropped, and full runs are final acceptance for PROMISING candidates (ruling P1-R8). P1 rejected on dev, so this compares the
 healthy dev pair instead.
 
 
