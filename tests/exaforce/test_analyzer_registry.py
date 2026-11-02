@@ -39,9 +39,12 @@ def _dummy_node(state):
 def test_register_analyzer_adds_node_once(restore_registry):
     from skillspector.exaforce._analyzer_registry import register_analyzer
 
-    register_analyzer(DUMMY_ID, _dummy_node, enabled=lambda: True)
+    def always() -> bool:
+        return True
+
+    register_analyzer(DUMMY_ID, _dummy_node, enabled=always)
     first_graph = sys.modules["skillspector.graph"].graph
-    register_analyzer(DUMMY_ID, _dummy_node, enabled=lambda: True)
+    register_analyzer(DUMMY_ID, _dummy_node, enabled=always)
 
     assert analyzers.ANALYZER_NODE_IDS.count(DUMMY_ID) == 1
     assert DUMMY_ID in analyzers.ANALYZER_NODES
@@ -49,6 +52,20 @@ def test_register_analyzer_adds_node_once(restore_registry):
     assert sys.modules["skillspector.graph"].graph is first_graph
     assert DUMMY_ID in _graph_node_ids(first_graph)
     assert skillspector.graph is first_graph
+
+
+def test_reregister_with_new_gate_replaces_wrapper(restore_registry):
+    from skillspector.exaforce._analyzer_registry import register_analyzer
+
+    register_analyzer(DUMMY_ID, _dummy_node, enabled=lambda: False)
+    first_graph = sys.modules["skillspector.graph"].graph
+    assert analyzers.ANALYZER_NODES[DUMMY_ID]({})["findings"] == []
+
+    register_analyzer(DUMMY_ID, _dummy_node, enabled=lambda: True)
+    assert analyzers.ANALYZER_NODE_IDS.count(DUMMY_ID) == 1
+    assert analyzers.ANALYZER_NODES[DUMMY_ID]({})["analyzer_status_events"] == ["ran"]
+    rebuilt = sys.modules["skillspector.graph"].graph
+    assert rebuilt is not first_graph and DUMMY_ID in _graph_node_ids(rebuilt)
 
 
 def test_register_analyzer_rejects_foreign_id(restore_registry):

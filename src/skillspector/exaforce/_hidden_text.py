@@ -3,8 +3,8 @@
 
 Content a human reviewer does not see but an agent reads:
 
-- ``EXA-HT1`` (HIGH): extracted document text (``_build_context_patches``) holding at
-  least 40 characters of runs marked ``[hidden] `` (white, invisible-render-mode or tiny
+- ``EXA-HT1`` (HIGH): extracted ``.pdf/.docx/.pptx/.xlsx`` text (``_build_context_patches``)
+  holding at least 40 characters of runs marked ``[hidden] `` (white, invisible-render-mode or tiny
   text). Needs ``SKILLSPECTOR_EXA_DOC_TEXT=on`` as well, which produces the markers.
 - ``EXA-HT2`` (MEDIUM): at least 3 invisible formatting characters (zero-width, bidi
   override/embedding, word-joiner family, BOM past offset 0) in a ``.md``/``.txt`` file,
@@ -12,7 +12,12 @@ Content a human reviewer does not see but an agent reads:
   symbols (emoji sequences, Indic conjuncts), or a zero-width non-joiner between two
   non-ASCII letters or marks (Persian word forms), is legitimate shaping and is not counted.
 - ``EXA-HT3`` (MEDIUM): an HTML comment in a ``.md`` file, outside fenced code blocks,
-  whose text (at least 40 characters) opens with an imperative directed at an agent.
+  whose text (at least 40 characters) opens with an imperative directed at an agent. An
+  unclosed comment hides the rest of the file and is checked too. At most 20 per file.
+
+Markdown is scanned in one linear pass that tracks fences and comments together, so a
+fence marker inside a comment cannot hide later content, and crafted input cannot make
+the comment search quadratic.
 
 The node runs through upstream ``static_runner`` like every static pattern analyzer, so
 findings get the usual ledger events and documentation-path confidence handling. Their
@@ -60,10 +65,16 @@ _ZWJ = "\u200d"
 _ZWNJ = "\u200c"
 _BOM = "\ufeff"
 
+HT3_MAX_FINDINGS = 20  # per file
+
+_DOC_SUFFIXES = (".pdf", ".docx", ".pptx", ".xlsx")
 _FENCE_OPEN = re.compile(r"^ {0,3}(`{3,}|~{3,})")
-_HTML_COMMENT = re.compile(r"<!--(.*?)-->", re.DOTALL)
+_COMMENT_OPEN, _COMMENT_CLOSE = "<!--", "-->"
+# First letter/digit of a comment: the verb must start there (leading punctuation,
+# whitespace and underscores are skipped). Searched, not anchored, to stay linear.
+_FIRST_WORD = re.compile(r"[^\W_]")
 _IMPERATIVE = re.compile(
-    r"^[\W_]*(?:run|execute|ignore|delete|remove|send|upload|post|curl|wget|chmod|ssh|copy"
+    r"(?:run|execute|ignore|delete|remove|send|upload|post|curl|wget|chmod|ssh|copy"
     r"|append|always|never|do\s+not\s+(?:tell|mention|ask))(?![\w-])",
     re.IGNORECASE,
 )
@@ -133,7 +144,8 @@ def _finding(
 
 
 def _ht1(content: str, file_path: str) -> list[AnalyzerFinding]:
-    if not content.startswith(EXTRACTED_PREFIX):
+    # Only documents _build_context_patches extracted: a text file cannot forge the header.
+    if not file_path.lower().endswith(_DOC_SUFFIXES) or not content.startswith(EXTRACTED_PREFIX):
         return []
     total, first = 0, None
     for index, line in enumerate(content.split("\n")):
@@ -158,22 +170,55 @@ def _ht1(content: str, file_path: str) -> list[AnalyzerFinding]:
     ]
 
 
-def _unfenced_lines(content: str) -> list[tuple[int, int, str]]:
-    """(line number, offset, text) of each line outside fenced code blocks."""
-    result: list[tuple[int, int, str]] = []
+def _fence_closes(line: str, fence: str) -> bool:
+    return re.fullmatch(rf" {{0,3}}{re.escape(fence[0])}{{{len(fence)},}}\s*", line) is not None
+
+
+def _scan_markdown(
+    content: str,
+) -> tuple[list[tuple[int, int, str]], list[tuple[int, str, bool]]]:
+    """One linear pass over ``content``.
+
+    Returns the ``(line number, offset, text)`` of every line outside fenced code blocks,
+    and the ``(start line, raw text, closed)`` of every HTML comment opened outside one.
+    A line inside an open comment is never a fence marker (an HTML block opened by
+    ``<!--`` runs to ``-->``); an unclosed comment runs to the end of the file.
+    """
+    lines: list[tuple[int, int, str]] = []
+    comments: list[tuple[int, str, bool]] = []
     fence: str | None = None
+    open_comment: tuple[int, int] | None = None  # (start line, absolute offset)
     offset = 0
     for index, line in enumerate(content.split("\n")):
-        if fence is None:
+        line_no = index + 1
+        line_offset, offset = offset, offset + len(line) + 1
+        if fence is not None:
+            if _fence_closes(line, fence):
+                fence = None
+            continue
+        if open_comment is None:
             opened = _FENCE_OPEN.match(line)
             if opened:
                 fence = opened.group(1)
-            else:
-                result.append((index + 1, offset, line))
-        elif re.fullmatch(rf" {{0,3}}{re.escape(fence[0])}{{{len(fence)},}}\s*", line):
-            fence = None
-        offset += len(line) + 1
-    return result
+                continue
+        lines.append((line_no, line_offset, line))
+        pos = 0
+        while True:
+            if open_comment is None:
+                start = line.find(_COMMENT_OPEN, pos)
+                if start == -1:
+                    break
+                open_comment = (line_no, line_offset + start)
+                pos = start + len(_COMMENT_OPEN)
+            end = line.find(_COMMENT_CLOSE, pos)
+            if end == -1:
+                break
+            pos = end + len(_COMMENT_CLOSE)
+            comments.append((open_comment[0], content[open_comment[1] : line_offset + pos], True))
+            open_comment = None
+    if open_comment is not None:
+        comments.append((open_comment[0], content[open_comment[1] :], False))
+    return lines, comments
 
 
 def _is_script_char(ch: str, categories: str) -> bool:
@@ -202,11 +247,9 @@ def _visible(text: str) -> str:
     return "".join(f"<U+{ord(ch):04X}>" if ch in _INVISIBLE else ch for ch in text)
 
 
-def _ht2(content: str, file_path: str) -> list[AnalyzerFinding]:
-    if not file_path.lower().endswith((".md", ".txt")):
-        return []
+def _ht2(lines: list[tuple[int, int, str]], file_path: str) -> list[AnalyzerFinding]:
     total, first, codepoints = 0, None, set()
-    for line_no, offset, line in _unfenced_lines(content):
+    for line_no, offset, line in lines:
         for index in range(len(line)):
             if _counts(line, index, offset + index):
                 total += 1
@@ -230,33 +273,29 @@ def _ht2(content: str, file_path: str) -> list[AnalyzerFinding]:
     ]
 
 
-def _mask_fences(content: str) -> str:
-    """``content`` with fenced code-block lines blanked (line numbers preserved)."""
-    lines = content.split("\n")
-    unfenced = {line_no for line_no, _, _ in _unfenced_lines(content)}
-    return "\n".join(line if index + 1 in unfenced else "" for index, line in enumerate(lines))
-
-
-def _ht3(content: str, file_path: str) -> list[AnalyzerFinding]:
-    if not file_path.lower().endswith(".md"):
-        return []
+def _ht3(comments: list[tuple[int, str, bool]], file_path: str) -> list[AnalyzerFinding]:
     findings: list[AnalyzerFinding] = []
-    content = _mask_fences(content)  # a comment inside a code block is displayed, not hidden
-    for match in _HTML_COMMENT.finditer(content):
-        inner = match.group(1).strip()
-        if len(inner) < HT3_MIN_COMMENT_CHARS or not _IMPERATIVE.match(inner):
+    for line_no, text, closed in comments:
+        if len(findings) >= HT3_MAX_FINDINGS:
+            break
+        body = text[len(_COMMENT_OPEN) : -len(_COMMENT_CLOSE) if closed else None]
+        inner = body.strip()
+        if len(inner) < HT3_MIN_COMMENT_CHARS:
             continue
-        comment = " ".join(match.group(0).split())
+        first = _FIRST_WORD.search(inner)
+        if first is None or not _IMPERATIVE.match(inner, first.start()):
+            continue
+        excerpt = " ".join(text[:1000].split())[:500]
         findings.append(
             _finding(
                 "EXA-HT3",
                 "Imperative instruction hidden in HTML comment",
                 Severity.MEDIUM,
                 file_path,
-                content.count("\n", 0, match.start()) + 1,
+                line_no,
                 0.7,
-                comment[:500],
-                comment,
+                excerpt,
+                excerpt,
             )
         )
     return findings
@@ -264,7 +303,14 @@ def _ht3(content: str, file_path: str) -> list[AnalyzerFinding]:
 
 def analyze(content: str, file_path: str, file_type: str) -> list[AnalyzerFinding]:
     """Find hidden-text indicators (EXA-HT1..3) in one file."""
-    return [*_ht1(content, file_path), *_ht2(content, file_path), *_ht3(content, file_path)]
+    findings = _ht1(content, file_path)
+    lower = file_path.lower()
+    if lower.endswith((".md", ".txt")):
+        lines, comments = _scan_markdown(content)
+        findings += _ht2(lines, file_path)
+        if lower.endswith(".md"):
+            findings += _ht3(comments, file_path)
+    return findings
 
 
 def node(state: SkillspectorState) -> AnalyzerNodeResponse:
@@ -300,7 +346,8 @@ def _register_texts() -> None:
 
 
 def _code_example_interceptor(original, args: tuple, kwargs: dict) -> object:
-    context = inspect.signature(original).bind(*args, **kwargs).arguments["context"]
+    # apply() checked that ``context`` is the first parameter, so no per-call binding.
+    context = args[0] if args else kwargs.get("context")
     if isinstance(context, str) and context.startswith(CONTEXT_MARKER):
         return False
     return original(*args, **kwargs)
@@ -309,6 +356,12 @@ def _code_example_interceptor(original, args: tuple, kwargs: dict) -> object:
 def apply() -> None:
     """Register the EXA-HT texts and the hidden-text analyzer node (idempotent)."""
     _register_texts()
+    params = list(inspect.signature(static_runner.is_code_example).parameters)
+    if params[:1] != ["context"]:
+        raise PatchDriftError(
+            "static_runner.is_code_example no longer takes `context` first; "
+            "upstream changed — update the exaforce patch."
+        )
     # static_runner._scan_path calls its module-global is_code_example by name.
     intercept_module_callable(
         static_runner, "is_code_example", _code_example_interceptor, expected_params=("context",)

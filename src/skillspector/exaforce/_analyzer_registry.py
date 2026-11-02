@@ -49,6 +49,8 @@ def _wrap(analyzer_id: str, node: Callable, enabled: Callable[[], bool]) -> Call
         return node(state)
 
     setattr(wrapper, _MARK, analyzer_id)
+    wrapper._exaforce_node = node  # type: ignore[attr-defined]
+    wrapper._exaforce_enabled = enabled  # type: ignore[attr-defined]
     return wrapper
 
 
@@ -69,7 +71,9 @@ def _rebuild_compiled_graphs() -> None:
 def register_analyzer(analyzer_id: str, node: Callable, *, enabled: Callable[[], bool]) -> None:
     """Idempotently add ``node`` as analyzer ``analyzer_id``, gated by ``enabled()``.
 
-    Raises ``PatchDriftError`` if upstream already owns ``analyzer_id``.
+    Re-registering the same ``node`` and ``enabled`` objects is a no-op; a different
+    ``node`` or ``enabled`` replaces the fork wrapper and rebuilds the graph. Raises
+    ``PatchDriftError`` if upstream already owns ``analyzer_id``.
     """
     ids, nodes = analyzers.ANALYZER_NODE_IDS, analyzers.ANALYZER_NODES
     if not isinstance(ids, list) or not isinstance(nodes, dict):
@@ -84,7 +88,11 @@ def register_analyzer(analyzer_id: str, node: Callable, *, enabled: Callable[[],
                 f"analyzer id {analyzer_id!r} is already registered upstream; "
                 "rename the exaforce analyzer."
             )
-        if getattr(existing, "__wrapped__", None) is node and ids.count(analyzer_id) == 1:
+        if (
+            getattr(existing, "_exaforce_node", None) is node
+            and getattr(existing, "_exaforce_enabled", None) is enabled
+            and ids.count(analyzer_id) == 1
+        ):
             return
     nodes[analyzer_id] = _wrap(analyzer_id, node, enabled)
     if analyzer_id not in ids:
