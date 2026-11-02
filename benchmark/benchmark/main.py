@@ -20,10 +20,13 @@ Usage:
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import pathlib
 import sys
 import uuid
+from collections.abc import Mapping
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import UTC, datetime
 from types import SimpleNamespace
@@ -84,7 +87,9 @@ from .utils import quiet_logging
     "--run-id",
     help="extend an existing run instead of starting a new one: re-scan only "
     "its unfinished units and append into the same run (requires -o pointing "
-    "at the DB that holds it). Default: every invocation is a new run.",
+    "at the DB that holds it). Refused when SKILLSPECTOR_EXA_*, SKILLSPECTOR_MODEL/"
+    "PROVIDER, MODEL_OVERRIDE or --units-file differ from what the run recorded. "
+    "Default: every invocation is a new run.",
 )
 @click.option("--no-llm", is_flag=True, help="static analysis only (no LLM)")
 @click.option(
@@ -209,6 +214,83 @@ def print_units_file_selection(selected: int, missing: int) -> None:
     print(f"--units-file: selected {selected} units ({missing} not found)")
 
 
+# Env that changes what a scan decides: a resumed run must see exactly what it started with.
+# Other recorded env (log level, auth wait, ...) may differ between sessions.
+_RESUME_PINNED_PREFIX = "SKILLSPECTOR_EXA_"
+_RESUME_PINNED_ENV = frozenset({"SKILLSPECTOR_MODEL", "SKILLSPECTOR_PROVIDER", "MODEL_OVERRIDE"})
+
+
+def units_file_record(path: str | os.PathLike | None) -> dict | None:
+    """``{"path": <resolved path>, "sha256": <hex of its bytes>}``, or None without a file."""
+    if not path:
+        return None
+    p = pathlib.Path(path).resolve()
+    return {"path": str(p), "sha256": hashlib.sha256(p.read_bytes()).hexdigest()}
+
+
+def run_config_json(
+    environ: Mapping[str, str], git_sha: str, units_file: str | os.PathLike | None
+) -> str:
+    """``runs.config_json``: :func:`config_snapshot` plus the ``units_file`` record."""
+    cfg = json.loads(config_snapshot(environ, git_sha))
+    cfg["units_file"] = units_file_record(units_file)
+    return json.dumps(cfg)
+
+
+def _show_env(v: str | None) -> str:
+    return "(unset)" if v is None else repr(v)
+
+
+def _show_units_file(rec: dict | None) -> str:
+    return "(none)" if rec is None else f"{rec.get('path')} (sha256 {rec.get('sha256')})"
+
+
+def resume_config_mismatches(stored_json: str, current_json: str) -> list[str]:
+    """What differs between a run's recorded config and this invocation's, as "name: old -> new".
+
+    Compared: env vars named ``SKILLSPECTOR_EXA_*``, ``SKILLSPECTOR_MODEL``,
+    ``SKILLSPECTOR_PROVIDER`` and ``MODEL_OVERRIDE`` (unset vs set counts as different), and
+    the ``units_file`` record (a config without the key counts as no units file). Nothing
+    else (git sha, other env) is compared.
+    """
+    stored, current = json.loads(stored_json), json.loads(current_json)
+    old_env, new_env = stored.get("env") or {}, current.get("env") or {}
+    out = [
+        f"{k}: {_show_env(old_env.get(k))} -> {_show_env(new_env.get(k))}"
+        for k in sorted(set(old_env) | set(new_env))
+        if (k.startswith(_RESUME_PINNED_PREFIX) or k in _RESUME_PINNED_ENV)
+        and old_env.get(k) != new_env.get(k)
+    ]
+    old_uf, new_uf = stored.get("units_file"), current.get("units_file")
+    if old_uf != new_uf:
+        out.append(f"units_file: {_show_units_file(old_uf)} -> {_show_units_file(new_uf)}")
+    return out
+
+
+def verify_resume_config(con, run_id: str, current_json: str) -> None:
+    """Refuse (``click.UsageError``) to extend ``run_id`` under different flags or units file.
+
+    A run recorded before ``config_json`` existed cannot be checked: warn and carry on.
+    """
+    row = con.execute("SELECT config_json FROM runs WHERE run_id = ?", [run_id]).fetchone()
+    stored = row[0] if row else None
+    if stored is None:
+        print(
+            f"WARNING: run {run_id} has no recorded config_json; cannot verify that this "
+            "resume uses the same SKILLSPECTOR_EXA_* flags, model and --units-file."
+        )
+        return
+    mismatches = resume_config_mismatches(stored, current_json)
+    if mismatches:
+        raise click.UsageError(
+            f"refusing to extend run {run_id}: this invocation differs from what the run "
+            "recorded (old -> new):\n  "
+            + "\n  ".join(mismatches)
+            + "\nRe-export the run's env flags and pass the same --units-file, "
+            "or omit --run-id to start a new run."
+        )
+
+
 def _run_benchmark(args: SimpleNamespace) -> int:
     if getattr(args, "units_file", None) and args.failures_only:
         raise click.UsageError("--failures-only cannot be combined with --units-file")
@@ -331,9 +413,15 @@ def _run_benchmark(args: SimpleNamespace) -> int:
     os.environ["SKILLSPECTOR_BENCH_AUTH_WAIT"] = str(args.auth_wait_seconds)
     cfg, provider, model, region = configure_run(args.no_llm, args.timeout)
 
+    run_config = run_config_json(os.environ, current_git_sha(), getattr(args, "units_file", None))
     con, done, extending = open_db(out_path, args.run_id)
     if extending:
         run_id = args.run_id
+        try:
+            verify_resume_config(con, run_id, run_config)
+        except click.UsageError:
+            con.close()
+            raise
         purge_incomplete(con, run_id)
         units_to_scan = [u for u in units if u.unit_path not in done]
         print(
@@ -358,7 +446,7 @@ def _run_benchmark(args: SimpleNamespace) -> int:
                 args.workers,
                 args.limit or None,
                 args.description,
-                config_snapshot(os.environ, current_git_sha()),
+                run_config,
             ],
         )
         units_to_scan = units

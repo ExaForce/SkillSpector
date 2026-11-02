@@ -82,6 +82,10 @@ uv run remove-run results.duckdb ab12 9f3 c7 --yes   # several at once, no promp
 Every invocation is a **new run** by default (multiple runs coexist in one DB).
 To extend an interrupted run, re-run with `--run-id <id>` (printed when the run
 is created): already-classified units are skipped and only failures re-scanned.
+The resume is refused when its `SKILLSPECTOR_EXA_*` flags, `SKILLSPECTOR_MODEL`,
+`SKILLSPECTOR_PROVIDER`, `MODEL_OVERRIDE` or `--units-file` (path and sha256) differ from
+what the run recorded in `runs.config_json`; re-export the same env and pass the same
+`--units-file`. Runs recorded without `config_json` resume with a warning.
 
 ### Re-checking a previous run
 
