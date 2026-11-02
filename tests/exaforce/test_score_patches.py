@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import inspect
 import json
 
 import pytest
@@ -11,7 +12,7 @@ import skillspector  # noqa: F401  (import applies the exaforce patches)
 from skillspector.exaforce import _score_patches
 from skillspector.exaforce._patchlib import PatchDriftError
 from skillspector.models import Finding
-from skillspector.nodes import report
+from skillspector.nodes import meta_analyzer, report
 
 _FLAGS = (
     "SKILLSPECTOR_EXA_SEMANTIC_GATE",
@@ -284,3 +285,9 @@ def test_gate_reaches_report_node(monkeypatch):
         "recommendation": "DO_NOT_INSTALL",
     }
     assert [i["id"] for i in on["issues"]] == ["SSD-1"]  # reported findings unchanged
+
+
+def test_unconfirmed_tag_is_the_one_upstream_emits():
+    """Upstream spells the tag as a literal (no constant to import), so pin that it still does."""
+    assert _score_patches.UNCONFIRMED_TAG == "llm-unconfirmed"
+    assert f'"{_score_patches.UNCONFIRMED_TAG}"' in inspect.getsource(meta_analyzer)
