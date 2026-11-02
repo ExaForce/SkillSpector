@@ -7,6 +7,7 @@ Do not tune them here.
 
 from __future__ import annotations
 
+import json
 import pathlib
 from dataclasses import dataclass, field
 from statistics import mean
@@ -20,6 +21,19 @@ from .report.extras import load_extras
 TP_FLOOR = 3
 FP_FLOOR = 2
 RECALL_FP_PER_TP = 8
+EXA_PREFIX = "SKILLSPECTOR_EXA_"
+UNRECORDED = "unrecorded"
+
+
+@dataclass
+class RunProvenance:
+    """What a run recorded about how it ran: display only, never part of the verdict."""
+
+    arm: str
+    run_id: str
+    git_sha: str | None  # None: no config_json / no git_sha recorded
+    exa_env: dict[str, str] | None  # SKILLSPECTOR_EXA_* env; None: unrecorded
+    started: str | None  # UTC date, YYYY-MM-DD
 
 
 @dataclass
@@ -37,6 +51,8 @@ class ArmsResult:
     verdict: str
     reasons: list[str] = field(default_factory=list)
     replicates: tuple[int, int] = (0, 0)
+    provenance: list[RunProvenance] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
 
 
 def _counts(con, run_id: str) -> dict[str, int]:
@@ -72,6 +88,38 @@ def _check_runs(con, control: list[str], treatment: list[str]) -> None:
                 f"runs {ref} and {r} cover different unit sets"
                 f" ({len(sets[ref])} vs {len(sets[r])} units; {diff} units differ)"
             )
+
+
+def _provenance(con, control: list[str], treatment: list[str]) -> list[RunProvenance]:
+    out = []
+    for arm, ids in (("control", control), ("treatment", treatment)):
+        for r in ids:
+            cfg_json, started = con.execute(
+                "SELECT config_json, started_at FROM runs WHERE run_id = ?", [r]
+            ).fetchone()
+            cfg = json.loads(cfg_json) if cfg_json else {}
+            env = cfg.get("env")
+            out.append(
+                RunProvenance(
+                    arm=arm,
+                    run_id=r,
+                    git_sha=cfg.get("git_sha"),
+                    exa_env=None
+                    if env is None
+                    else {k: v for k, v in sorted(env.items()) if k.startswith(EXA_PREFIX)},
+                    started=started.date().isoformat() if started else None,
+                )
+            )
+    return out
+
+
+def _date_warnings(prov: list[RunProvenance]) -> list[str]:
+    dates = sorted({p.started for p in prov if p.started})
+    if len(dates) <= 1:
+        return []
+    return [
+        f"runs started on different dates ({', '.join(dates)}); the protocol compares same-day arms"
+    ]
 
 
 def _mean_attributed(con, run_ids: list[str]) -> float | None:
@@ -142,6 +190,7 @@ def compare_arms(
         elif att[1] < att[0]:
             fail(f"attributed recall dropped: {att[0]:.4f} -> {att[1]:.4f}")
 
+    prov = _provenance(con, control, treatment)
     return ArmsResult(
         kind=kind,
         control=list(control),
@@ -156,6 +205,8 @@ def compare_arms(
         verdict="REJECT" if failed else "PROMISING",
         reasons=reasons,
         replicates=(len(control), len(treatment)),
+        provenance=prov,
+        warnings=_date_warnings(prov),
     )
 
 
@@ -170,6 +221,47 @@ def _fmt_att(v: float | None) -> str:
 
 def _rep(n: int) -> str:
     return f"{n} replicate" + ("" if n == 1 else "s")
+
+
+def _show(v: str | None) -> str:
+    return "(unset)" if v is None else repr(v)
+
+
+def _env_cell(p: RunProvenance, ref: RunProvenance) -> str:
+    """``p``'s SKILLSPECTOR_EXA_* env, as a diff against the reference (first control) run."""
+    if p.exa_env is None:
+        return UNRECORDED
+    if p is ref:
+        flags = ", ".join(f"{k}={v!r}" for k, v in p.exa_env.items()) or "no EXA flags"
+        return f"reference: {flags}"
+    if ref.exa_env is None:
+        return f"reference {ref.run_id} unrecorded"
+    diffs = [
+        f"{k}: {_show(ref.exa_env.get(k))} -> {_show(p.exa_env.get(k))}"
+        for k in sorted(set(ref.exa_env) | set(p.exa_env))
+        if ref.exa_env.get(k) != p.exa_env.get(k)
+    ]
+    return "; ".join(diffs) or f"same as {ref.run_id}"
+
+
+def _provenance_lines(r: ArmsResult) -> list[str]:
+    if not r.provenance:
+        return []
+    ref = r.provenance[0]
+    out = [
+        "",
+        f"Run provenance (from runs.config_json; flags relative to the first control, "
+        f"{ref.run_id}):",
+        "",
+        "| arm | run | git sha | started (UTC) | SKILLSPECTOR_EXA_* |",
+        "|---|---|---|---|---|",
+    ]
+    for p in r.provenance:
+        out.append(
+            f"| {p.arm} | {p.run_id} | {p.git_sha or UNRECORDED} | {p.started or UNRECORDED} |"
+            f" {_env_cell(p, ref)} |"
+        )
+    return out
 
 
 def render_markdown(r: ArmsResult) -> str:
@@ -195,6 +287,9 @@ def render_markdown(r: ArmsResult) -> str:
         f"- noise floor (control, {_rep(r.replicates[0])}): N_TP = {r.n_tp}, N_FP = {r.n_fp}",
         f"- dTP = {r.d_tp:+.1f}, dFP = {r.d_fp:+.1f}",
     ]
+    out += _provenance_lines(r)
+    if r.warnings:
+        out += [""] + [f"WARNING: {w}" for w in r.warnings]
     if r.reasons:
         out += ["", "Reasons:"] + [f"- {x}" for x in r.reasons]
     out += ["", f"VERDICT: {r.verdict}", ""]

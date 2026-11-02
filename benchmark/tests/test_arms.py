@@ -185,3 +185,46 @@ def test_arms_fp_kind_tp_cost_rejects():
     _run(con, "t1", 90, 5)
     r = compare_arms(con, ["c1", "c2"], ["t1"], kind="fp")
     assert r.verdict == "REJECT" and any("TP" in x for x in r.reasons)
+
+
+def _provenance(con, run_id, *, sha="abc1234", env=None, started="2026-11-02 09:00:00"):
+    cfg = None if env is None else json.dumps({"git_sha": sha, "env": env})
+    con.execute(
+        "UPDATE runs SET config_json = ?, started_at = CAST(? AS TIMESTAMP) WHERE run_id = ?",
+        [cfg, started, run_id],
+    )
+
+
+def test_arms_shows_run_provenance():
+    con = _fresh_db()
+    for rid, tp in (("c1", 100), ("c2", 102), ("t1", 112), ("t2", 114)):
+        _run(con, rid, tp, 5)
+    base = {"SKILLSPECTOR_MODEL": "m", "SKILLSPECTOR_EXA_KEEP": "1"}
+    _provenance(con, "c1", env=base)
+    _provenance(con, "c2", sha="def5678", env=base, started="2026-11-02 18:00:00")
+    _provenance(con, "t1", env={**base, "SKILLSPECTOR_EXA_GATE": "any"})
+    _provenance(con, "t2", env=None)  # recorded before config_json existed
+    r = compare_arms(con, ["c1", "c2"], ["t1", "t2"])
+    md = render_markdown(r)
+    rows = {line.split("|")[2].strip(): line for line in md.splitlines() if line.startswith("| ")}
+    assert "abc1234" in rows["c1"] and "SKILLSPECTOR_EXA_KEEP='1'" in rows["c1"]
+    assert "def5678" in rows["c2"] and "same as c1" in rows["c2"]
+    assert "SKILLSPECTOR_EXA_GATE: (unset) -> 'any'" in rows["t1"]
+    assert "SKILLSPECTOR_MODEL" not in rows["t1"]  # only EXA flags are shown
+    assert rows["t2"].count("unrecorded") == 2
+    assert "different dates" not in md
+    assert r.verdict == "PROMISING"  # display only
+
+
+def test_arms_warns_on_different_start_dates():
+    con = _fresh_db()
+    for rid, tp in (("c1", 100), ("c2", 102), ("t1", 112)):
+        _run(con, rid, tp, 5)
+    _provenance(con, "c1", env={})
+    _provenance(con, "c2", env={}, started="2026-11-01 23:00:00")
+    _provenance(con, "t1", env={})
+    r = compare_arms(con, ["c1", "c2"], ["t1"])
+    md = render_markdown(r)
+    assert "WARNING" in md and "different dates" in md
+    assert "2026-11-01" in md and "2026-11-02" in md
+    assert r.verdict == "PROMISING"
