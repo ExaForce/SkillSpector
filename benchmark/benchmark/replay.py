@@ -15,6 +15,7 @@ import json
 import pathlib
 import uuid
 from collections import defaultdict
+from collections.abc import Collection
 from dataclasses import asdict, dataclass, fields
 from datetime import UTC, datetime
 from typing import Literal
@@ -60,6 +61,7 @@ _CLASSIFICATION_COLUMNS = {
     "llm_calls_succeeded": "INTEGER",
 }
 REPLAY_STATUS = "Replay"
+GATE_MIN_SCORE = 51  # P1: a gate hit scores max(score, 51), the HIGH band floor
 
 
 @dataclass(frozen=True)
@@ -69,8 +71,9 @@ class Policy:
     ``gate_rules``: a finding whose rule_id equals an entry, or starts with an entry that
     ends in ``-`` (``"SSD-"``), blocks the unit outright when its severity is at least
     ``gate_min_severity``. In ``confirmed`` mode, findings tagged ``llm-unconfirmed`` do not
-    gate. ``doc_medium_cap``: only the first N scoring MEDIUM findings from non-executable
-    files count; later ones contribute 0.
+    gate; a gate hit raises the score to ``max(score, 51)``. ``doc_medium_cap``: keep only
+    the first N MEDIUM findings from non-executable files, by ``(rule_id, file, start_line)``,
+    and drop the rest before scoring (P1's cap semantics; see :func:`cap_doc_mediums`).
     """
 
     threshold: int = 51
@@ -107,19 +110,59 @@ def _severity(f: dict) -> str:
     return (f.get("severity") or "LOW").upper()
 
 
-def rescore(findings: list[dict], executable_files: set[str], policy: Policy) -> float:
-    """Upstream additive risk score of ``findings`` (unclamped, untruncated), plus the cap.
+def cap_doc_mediums(
+    findings: list[dict], non_executable_files: Collection[str], cap: int
+) -> list[dict]:
+    """``findings`` minus the doc MEDIUMs past the first ``cap`` (P1's cap semantics).
 
-    Mirrors ``_compute_risk_score`` in src/skillspector/nodes/report.py: findings sorted
+    Doc MEDIUMs are MEDIUM findings (any case, any confidence) whose file is in
+    ``non_executable_files`` -- component metadata says ``executable: False``. A file with
+    no components row, or a finding with no file, counts as executable and is never capped.
+    They are sorted by ``(rule_id, file, start_line)`` (None -> "" for the strings; a NULL
+    start_line sorts before any line; ties keep input order) and all but the first ``cap``
+    are dropped. The kept findings stay in input order.
+    """
+    doc = [
+        i
+        for i, f in enumerate(findings)
+        if _severity(f) == "MEDIUM" and f.get("file") in non_executable_files
+    ]
+    doc.sort(
+        key=lambda i: (
+            findings[i].get("rule_id") or "",
+            findings[i].get("file") or "",
+            findings[i].get("start_line") is not None,
+            findings[i].get("start_line") or 0,
+        )
+    )
+    dropped = set(doc[cap:])
+    return [f for i, f in enumerate(findings) if i not in dropped]
+
+
+def rescore(
+    findings: list[dict],
+    executable_files: Collection[str],
+    policy: Policy,
+    non_executable_files: Collection[str] = frozenset(),
+) -> float:
+    """Upstream additive risk score of ``findings`` (unclamped, untruncated) under ``policy``.
+
+    With ``policy.doc_medium_cap`` set, :func:`cap_doc_mediums` first drops doc MEDIUMs
+    (files in ``non_executable_files``) past the first N; the rest is scored unchanged, so a
+    dropped finding also frees its rule's diminishing-weight slot.
+
+    Then mirrors ``_compute_risk_score`` in src/skillspector/nodes/report.py: findings sorted
     (stably) by ``(rule_id or "UNKNOWN", severity rank)``; per rule_id the 1st/2nd/3rd
     occurrence scores x1/x0.5/x0.25 and later ones 0; points scaled by confidence clamped
     to [0, 1], and confidence <= 0 is skipped before it counts as an occurrence; x1.3 when
-    the finding's file is executable. ``policy.doc_medium_cap`` then zeroes MEDIUM findings
-    from non-executable files after the first N that would otherwise score, in this order.
+    the finding's file is in ``executable_files``.
 
-    Each finding is a dict with ``rule_id``, ``severity``, ``confidence`` and ``file``.
-    Pass them in stored ``issue_index`` order: ties in the sort keep that order, as upstream.
+    Each finding is a dict with ``rule_id``, ``severity``, ``confidence``, ``file`` and
+    (for the cap) ``start_line``. Pass them in stored ``issue_index`` order: ties in the
+    sort keep that order, as upstream.
     """
+    if policy.doc_medium_cap is not None:
+        findings = cap_doc_mediums(findings, non_executable_files, policy.doc_medium_cap)
     ordered = sorted(
         findings,
         key=lambda f: (
@@ -128,7 +171,6 @@ def rescore(findings: list[dict], executable_files: set[str], policy: Policy) ->
         ),
     )
     occurrences: dict[str, int] = defaultdict(int)
-    doc_mediums = 0
     score = 0.0
     for f in ordered:
         conf = f.get("confidence")
@@ -140,15 +182,9 @@ def rescore(findings: list[dict], executable_files: set[str], policy: Policy) ->
         occurrences[rule_id] = count + 1
         if count >= len(_DIMINISHING_WEIGHTS):
             continue
-        sev = _severity(f)
-        executable = f.get("file") in executable_files
-        if sev == "MEDIUM" and not executable and policy.doc_medium_cap is not None:
-            doc_mediums += 1
-            if doc_mediums > policy.doc_medium_cap:
-                continue
-        contribution = _SEVERITY_POINTS.get(sev, _UNKNOWN_SEVERITY_POINTS)
+        contribution = _SEVERITY_POINTS.get(_severity(f), _UNKNOWN_SEVERITY_POINTS)
         contribution *= _DIMINISHING_WEIGHTS[count] * confidence
-        if executable:
+        if f.get("file") in executable_files:
             contribution *= _EXECUTABLE_MULTIPLIER
         score += contribution
     return score
@@ -176,7 +212,9 @@ def _band(score: int) -> str:
     return next(band for floor, band in _RISK_SEVERITY_BANDS if score >= floor)
 
 
-def _replayed_score(stored: int | None, findings, executable, policy: Policy) -> int:
+def _replayed_score(
+    stored: int | None, findings, executable, non_executable, policy: Policy
+) -> int:
     """New 0-100 score: the stored score moved by the policy's change to the recomputation.
 
     The stored score is what the scanner decided; a plain recomputation from stored issues
@@ -185,7 +223,7 @@ def _replayed_score(stored: int | None, findings, executable, policy: Policy) ->
     score exactly. When the recomputation agrees with the stored score, the new score is
     the recomputation itself, which also keeps the fraction the stored int truncated.
     """
-    new = rescore(findings, executable, policy)
+    new = rescore(findings, executable, policy, non_executable)
     if stored is None:
         raw = new
     else:
@@ -225,8 +263,8 @@ def replay_run(con, src_run: str, policy: Policy, description: str) -> str:
         _require_tags(con, src_run)
 
     findings: dict[str, list[dict]] = defaultdict(list)
-    for unit, rule_id, severity, confidence, file, tags in con.execute(
-        "SELECT unit_path, rule_id, severity, confidence, file, tags FROM issues "
+    for unit, rule_id, severity, confidence, file, start_line, tags in con.execute(
+        "SELECT unit_path, rule_id, severity, confidence, file, start_line, tags FROM issues "
         "WHERE run_id = ? ORDER BY unit_path, issue_index",
         [src_run],
     ).fetchall():
@@ -236,14 +274,20 @@ def replay_run(con, src_run: str, policy: Policy, description: str) -> str:
                 "severity": severity,
                 "confidence": confidence,
                 "file": file,
+                "start_line": start_line,
                 "tags": tags or [],
             }
         )
+    # Executable for the x1.3 multiplier: executable = TRUE. Non-executable for the cap:
+    # executable = FALSE (a NULL flag or a missing row is neither, so never capped).
     executable: dict[str, set[str]] = defaultdict(set)
-    for unit, path in con.execute(
-        "SELECT unit_path, path FROM components WHERE run_id = ? AND executable", [src_run]
+    non_executable: dict[str, set[str]] = defaultdict(set)
+    for unit, path, is_exec in con.execute(
+        "SELECT unit_path, path, executable FROM components "
+        "WHERE run_id = ? AND executable IS NOT NULL",
+        [src_run],
     ).fetchall():
-        executable[unit].add(path)
+        (executable if is_exec else non_executable)[unit].add(path)
 
     new_run = uuid.uuid4().hex[:12]
     rows = []
@@ -258,9 +302,14 @@ def replay_run(con, src_run: str, policy: Policy, description: str) -> str:
     ).fetchall():  # fmt: skip
         if status != "Error" and is_malicious is not None:
             unit_findings = findings.get(unit, [])
-            score = _replayed_score(risk_score, unit_findings, executable[unit], policy)
+            score = _replayed_score(
+                risk_score, unit_findings, executable[unit], non_executable[unit], policy
+            )
+            gated = _gate_hit(unit_findings, policy)
+            if gated:
+                score = max(score, GATE_MIN_SCORE)
             band = _band(score)
-            predicted = score >= policy.threshold or _gate_hit(unit_findings, policy)
+            predicted = gated or score >= policy.threshold
             if predicted:
                 rec = MALICIOUS_RECOMMENDATION
             else:

@@ -16,13 +16,14 @@ SEED_DB = pathlib.Path(__file__).resolve().parents[1] / "malskillbench_agentguar
 SEED_RUN = "113b02ab497b"
 
 
-def _f(rule_id, severity, confidence=1.0, file="SKILL.md", tags=None):
+def _f(rule_id, severity, confidence=1.0, file="SKILL.md", tags=None, start_line=None):
     return {
         "rule_id": rule_id,
         "severity": severity,
         "confidence": confidence,
         "file": file,
         "tags": tags,
+        "start_line": start_line,
     }
 
 
@@ -48,9 +49,10 @@ def _add_unit(con, run_id, unit, *, truth, score, findings, executable=(), statu
     for i, f in enumerate(findings):
         con.execute(
             "INSERT INTO issues (run_id, unit_path, issue_index, rule_id, severity, confidence, "
-            "file, tags) VALUES (?,?,?,?,?,?,?,?)",
-            [run_id, unit, i, f["rule_id"], f["severity"], f["confidence"], f["file"], f["tags"]],
-        )
+            "file, tags, start_line) VALUES (?,?,?,?,?,?,?,?,?)",
+            [run_id, unit, i, f["rule_id"], f["severity"], f["confidence"], f["file"], f["tags"],
+             f["start_line"]],
+        )  # fmt: skip
     files = {f["file"] for f in findings} | set(executable)
     for path in sorted(files):
         con.execute(
@@ -126,8 +128,20 @@ def test_gate_blocks_on_rule_prefix():
         "FROM classifications WHERE run_id = ? AND unit_path = 'gated'",
         [new],
     ).fetchone()
-    # The score is untouched by a gate; the verdict uses the upstream vocabulary.
-    assert row == ("DO_NOT_INSTALL", True, 25, "MEDIUM", "Replay")
+    # A gate hit raises the score to max(score, 51) (P1 semantics) and blocks.
+    assert row == ("DO_NOT_INSTALL", True, 51, "HIGH", "Replay")
+
+
+def test_gate_keeps_higher_score():
+    con = _fresh_db()
+    _src_run(con)
+    _add_unit(con, "src", "hi", truth=True, score=90, findings=[_f("SSD-1", "CRITICAL")])
+    new = replay_run(con, "src", Policy(gate_rules=("SSD-",)), "gate")
+    assert con.execute(
+        "SELECT classification, is_malicious, risk_score, risk_severity FROM classifications "
+        "WHERE run_id = ?",
+        [new],
+    ).fetchone() == ("DO_NOT_INSTALL", True, 90, "CRITICAL")
 
 
 def test_gate_min_severity_is_at_least_as_severe():
@@ -166,12 +180,80 @@ def test_replay_confirmed_gate_requires_tags():
 
 def test_doc_medium_cap():
     meds = [_f(f"M{i}", "MEDIUM", file="ref.md") for i in range(5)]
-    assert rescore(meds, set(), Policy()) == pytest.approx(50.0)
-    assert rescore(meds, set(), Policy(doc_medium_cap=2)) == pytest.approx(20.0)
+    assert rescore(meds, set(), Policy(), non_executable_files={"ref.md"}) == pytest.approx(50.0)
+    capped = rescore(meds, set(), Policy(doc_medium_cap=2), non_executable_files={"ref.md"})
+    assert capped == pytest.approx(20.0)
     # Executable files and other severities are not capped.
     exec_meds = [_f(f"M{i}", "MEDIUM", file="x.py") for i in range(3)]
     assert rescore(exec_meds + [_f("H", "HIGH", file="ref.md")], {"x.py"},
-                   Policy(doc_medium_cap=0)) == pytest.approx(39.0 + 25)  # fmt: skip
+                   Policy(doc_medium_cap=0), non_executable_files={"ref.md"}
+                   ) == pytest.approx(39.0 + 25)  # fmt: skip
+
+
+def test_doc_medium_cap_unknown_files_are_not_capped():
+    # Only files whose component metadata says executable=False are capped: a file with no
+    # components row (or a finding with no file) counts as executable, as in P1.
+    meds = [_f("A", "MEDIUM", file="gone.md"), _f("B", "MEDIUM", file=None)]
+    assert rescore(meds, set(), Policy(doc_medium_cap=0), non_executable_files={"ref.md"}) == (
+        pytest.approx(20.0)
+    )
+    # No metadata at all: nothing is capped.
+    assert rescore(meds, set(), Policy(doc_medium_cap=0)) == pytest.approx(20.0)
+
+
+def test_doc_medium_cap_drops_before_scoring_and_frees_rule_slots():
+    # Rule R: HIGH (exec), three doc MEDIUMs, then a LOW (exec). Upstream gives the 1st/2nd/3rd
+    # occurrence of R x1/x0.5/x0.25. With cap=1 the 2nd and 3rd MEDIUMs are dropped from the
+    # list, so the LOW moves up into the third slot: 32.5 + 5 + 5*0.25*1.3.
+    findings = [
+        _f("R", "HIGH", file="x.py"),
+        _f("R", "MEDIUM", file="doc.md", start_line=1),
+        _f("R", "MEDIUM", file="doc.md", start_line=2),
+        _f("R", "MEDIUM", file="doc.md", start_line=3),
+        _f("R", "LOW", file="x.py"),
+    ]
+    kw = {"non_executable_files": {"doc.md"}}
+    assert rescore(findings, {"x.py"}, Policy(), **kw) == pytest.approx(32.5 + 5 + 2.5)
+    assert rescore(findings, {"x.py"}, Policy(doc_medium_cap=1), **kw) == pytest.approx(
+        32.5 + 5 + 1.625
+    )
+
+
+def test_doc_medium_cap_sort_key_and_confidence():
+    # Kept: the first N by (rule_id, file, start_line), NULL start_line first.
+    findings = [
+        _f("B", "MEDIUM", confidence=0.6, file="doc.md", start_line=1),
+        _f("A", "MEDIUM", confidence=0.7, file="z.md", start_line=9),
+        _f("A", "MEDIUM", confidence=0.8, file="a.md", start_line=5),
+        _f("A", "medium", confidence=0.9, file="a.md", start_line=None),
+    ]
+    non_exec = {"doc.md", "z.md", "a.md"}
+    cap1 = rescore(findings, set(), Policy(doc_medium_cap=1), non_executable_files=non_exec)
+    assert cap1 == pytest.approx(9.0)  # (A, a.md, None) only
+    cap2 = rescore(findings, set(), Policy(doc_medium_cap=2), non_executable_files=non_exec)
+    assert cap2 == pytest.approx(8.0 + 4.5)  # (A, a.md, 5) x1 then (A, a.md, None) x0.5
+    # Every doc MEDIUM counts toward the cap, even one that would not score (confidence 0).
+    zero_first = [
+        _f("A", "MEDIUM", confidence=0.0, file="doc.md"),
+        _f("B", "MEDIUM", confidence=1.0, file="doc.md"),
+    ]
+    assert rescore(zero_first, set(), Policy(doc_medium_cap=1),
+                   non_executable_files={"doc.md"}) == 0.0  # fmt: skip
+
+
+def test_doc_medium_cap_replay_uses_start_line():
+    # Same rule, same file: the cap keeps the lower start_line (issue 1, confidence 0.2).
+    con = _fresh_db()
+    _src_run(con)
+    findings = [
+        _f("A", "MEDIUM", confidence=1.0, file="doc.md", start_line=9),
+        _f("A", "MEDIUM", confidence=0.2, file="doc.md", start_line=3),
+    ]
+    _add_unit(con, "src", "u", truth=False, score=11, findings=findings)
+    new = replay_run(con, "src", Policy(doc_medium_cap=1), "cap")
+    assert con.execute(
+        "SELECT risk_score FROM classifications WHERE run_id = ?", [new]
+    ).fetchone() == (2,)
 
 
 def test_doc_medium_cap_lowers_replayed_score():
