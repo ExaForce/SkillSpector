@@ -25,6 +25,7 @@ remove-run = "benchmark.main:remove_run"
 health = "benchmark.health:main"
 replay = "benchmark.replay:main"
 attribution = "benchmark.attribution:main"
+arms = "benchmark.arms:main"
 
 [dependency-groups]
 dev = ["pytest>=8"]
