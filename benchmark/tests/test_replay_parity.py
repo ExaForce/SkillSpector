@@ -13,10 +13,11 @@ import random
 
 import pytest
 import skillspector.exaforce
+from skillspector.exaforce import _score_patches
 from skillspector.models import Finding
 from skillspector.nodes import report
 
-from benchmark.replay import GATE_MIN_SCORE, Policy, _gate_hit, rescore
+from benchmark.replay import GATE_MIN_SCORE, UNCONFIRMED_TAG, Policy, _gate_hit, rescore
 
 _FLAGS = (
     "SKILLSPECTOR_EXA_SEMANTIC_GATE",
@@ -24,9 +25,11 @@ _FLAGS = (
     "SKILLSPECTOR_EXA_GATE_MIN_SEVERITY",
     "SKILLSPECTOR_EXA_DOC_MEDIUM_CAP",
 )
-_GATE_RULES = ("SSD-1", "SSD-2", "SSD-3", "SSD-4", "P2")
+# The classifier's default rule list, so a drift in it shows up as a replay mismatch here.
+_GATE_RULES = _score_patches.DEFAULT_GATE_RULES
 
-_RULES = ("SSD-1", "SSD-2", "SSD-3", "SSD-4", "P2", "SDI-1", "SC1", "X")
+# SSD-10 / P20 start with a gate entry's text but are different rules (an exact entry is not a prefix).
+_RULES = ("SSD-1", "SSD-10", "SSD-2", "P20", "SSD-3", "SSD-4", "P2", "SDI-1", "SC1", "X")
 _SEVERITIES = ("CRITICAL", "HIGH", "MEDIUM", "LOW", "medium", "high", "INFO")
 _CONFIDENCES = (0.0, 0.1, 0.3, 0.5, 0.7, 0.9, 1.0, 1.4, -0.2)
 _TAGS = ((), ("llm-unconfirmed",), ("other",), ("other", "llm-unconfirmed"))
@@ -135,3 +138,48 @@ def test_parity_lists_exercise_every_policy():
     any_hits = {i for i, f in enumerate(_LISTS) if _gate_hit(f, _POLICIES["gate-any"][0])}
     confirmed = {i for i, f in enumerate(_LISTS) if _gate_hit(f, _POLICIES["gate-confirmed"][0])}
     assert confirmed < any_hits
+
+
+def _finding(rule_id, severity, confidence, file, start_line=1, tags=()):
+    return {
+        "rule_id": rule_id,
+        "severity": severity,
+        "confidence": confidence,
+        "file": file,
+        "start_line": start_line,
+        "tags": list(tags),
+    }
+
+
+def test_tag_and_default_rules_match_classifier():
+    assert UNCONFIRMED_TAG == _score_patches.UNCONFIRMED_TAG
+    assert set(_GATE_RULES) == {"SSD-1", "SSD-2", "SSD-3", "SSD-4", "P2"}
+
+
+@pytest.mark.parametrize("rule_id", ["SSD-10", "P20"])
+def test_exact_gate_entry_is_not_a_prefix(monkeypatch, rule_id):
+    """``SSD-1`` must not gate ``SSD-10``; only an entry ending in ``-`` is a prefix."""
+    monkeypatch.setenv("SKILLSPECTOR_EXA_SEMANTIC_GATE", "any")
+    policy = _POLICIES["gate-any"][0]
+    findings = [_finding(rule_id, "HIGH", 0.3, "tool.py")]
+    assert not _gate_hit(findings, policy)
+    assert not _replay_verdict(findings, policy)
+    assert not _classifier_verdict(findings)
+    # the control: the exact id does gate under the same policy
+    exact = [_finding("SSD-1", "HIGH", 0.3, "tool.py")]
+    assert _gate_hit(exact, policy)
+    assert _classifier_verdict(exact)
+
+
+def test_file_without_metadata_is_never_capped(monkeypatch):
+    """The cap only touches known non-executable files; ``notes.md`` has no metadata row."""
+    monkeypatch.setenv("SKILLSPECTOR_EXA_DOC_MEDIUM_CAP", "0")
+    policy = Policy(doc_medium_cap=0)
+    findings = [_finding(f"R{i}", "MEDIUM", 1.0, "notes.md", i) for i in range(1, 9)]
+    assert _replay_verdict(findings, Policy())  # scored, and blocks, without the cap
+    assert _replay_verdict(findings, policy)
+    assert _classifier_verdict(findings)
+    # the control: the same findings in a known doc are capped away
+    docs = [dict(f, file="README.md") for f in findings]
+    assert not _replay_verdict(docs, policy)
+    assert not _classifier_verdict(docs)
