@@ -1,0 +1,2 @@
+- `core-dev.txt`: `uv run evalset core results/evalsets/core-dev.txt --db malskillbench_agentguard_seed.duckdb --run 113b02ab497b --seed 29` (412 annotated + 352 FP + 600 stratified TN); selection made from the original baseline `113b02ab497b`'s outcomes.
+- `splits.tsv`: `uv run evalset splits results/evalsets/splits.tsv --db malskillbench_agentguard_seed.duckdb --run 113b02ab497b results/evalsets/core-dev.txt` (core only is dev, every other unit of the run is holdout; seed 29 via core-dev.txt); membership derives from the original baseline `113b02ab497b`'s outcomes.
