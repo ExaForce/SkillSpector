@@ -4,9 +4,17 @@ Pure module: no flags, no patching. It parses untrusted input, so every limit
 below is a hard bound and no public function raises on malformed input; it
 returns a ``DocText`` with ``skipped_reason`` set, or with zero runs, instead.
 
-``skipped_reason`` values: ``"limits"`` (a size, entry-count, decompression or
-text cap tripped). Encrypted, object-stream-only and otherwise unparseable
-files are not "skipped": they yield zero runs and render as a header only.
+``skipped_reason`` is set to ``"limits"`` in exactly two cases: a PDF larger
+than ``MAX_PDF_BYTES``, and an office zip that exceeds ``MAX_ZIP_ENTRIES``,
+``MAX_ZIP_UNCOMPRESSED`` (declared) or the same byte cap on the actual read.
+The per-stream decompression bound, the total decompression budget and the
+text-character cap truncate silently and leave ``skipped_reason`` unset.
+Encrypted, object-stream-only and otherwise unparseable files are not
+"skipped": they yield zero runs and render as a header only.
+
+Known limitation: strings in CID/Identity-H fonts are decoded as latin-1
+glyph ids (no ToUnicode CMap parsing), so such PDFs yield garbage or little
+text.
 """
 
 from __future__ import annotations
@@ -15,6 +23,7 @@ import base64
 import binascii
 import html
 import io
+import math
 import re
 import zipfile
 import zlib
@@ -28,6 +37,7 @@ MAX_ZIP_ENTRIES = 2_000
 MAX_ZIP_UNCOMPRESSED = 20_000_000
 MAX_TEXT_CHARS = 200_000
 HIDDEN_PREFIX = "[hidden] "
+_PREFIX_CORE = "[hidden]"
 MIN_VISIBLE_FONT_SIZE = 1.5
 _MAX_OPERANDS = 64
 
@@ -58,6 +68,10 @@ def render(doc: DocText, ext: str, mark_hidden: bool) -> str:
         run = _clean(run)
         if not run or budget <= 0:
             return
+        if run.startswith(_PREFIX_CORE):
+            # Document text must not be able to forge the hidden marker: a run that
+            # itself starts with "[hidden]" is rewritten to "(hidden)".
+            run = "(hidden)" + run[len(_PREFIX_CORE) :]
         run = run[:budget]
         budget -= len(run)
         lines.append(prefix + run)
@@ -66,7 +80,7 @@ def render(doc: DocText, ext: str, mark_hidden: bool) -> str:
         add(run)
     for run in doc.hidden_runs:
         add(run, HIDDEN_PREFIX if mark_hidden else "")
-    hidden_count = sum(1 for ln in lines if ln.startswith(HIDDEN_PREFIX)) if mark_hidden else 0
+    hidden_count = len(doc.hidden_runs) if mark_hidden else 0
     header = f"[exaforce: text extracted from {ext}; {hidden_count} hidden spans]"
     return "\n".join([header, *lines])
 
@@ -99,7 +113,7 @@ _NAME = re.compile(rb"/[^\s\x00()<>\[\]{}/%]*")
 _STRING_SPECIAL = re.compile(rb"[()\\]")
 _EOL = re.compile(rb"[\r\n]")
 _STREAM = re.compile(rb"(?<!end)stream\r?\n")
-_FILTER = re.compile(rb"/Filter\s*(\[[^\]]*\]|/[A-Za-z0-9]+)")
+_FILTER = re.compile(rb"/Filter\s*(\[[^\[\]]{0,256}\]|/[A-Za-z0-9]+)")
 _INLINE_IMAGE_END = re.compile(rb"\sEI(?=[\s]|$)")
 _ESCAPES = {
     ord("n"): 10,
@@ -108,14 +122,13 @@ _ESCAPES = {
     ord("b"): 8,
     ord("f"): 12,
 }
-_SKIP_STREAM_MARKERS = (
-    b"/ObjStm",
-    b"/XRef",
-    b"/Subtype/Image",
-    b"/Subtype /Image",
-    b"/FontFile",
-    b"/Length1",
+# Streams that are not page content: object/xref streams, images, fonts, attachments.
+_SKIP_STREAM = re.compile(
+    rb"/ObjStm|/XRef|/FontFile|/EmbeddedFile|/Length[123]\b"
+    rb"|/Subtype\s*/(?:Image|Type1C|CIDFontType0C|OpenType)"
 )
+_STREAM_DICT_WINDOW = 4096
+_MAX_ARRAY_DEPTH = 32
 
 
 def _read_string(data: bytes, i: int) -> tuple[bytes, int]:
@@ -171,10 +184,24 @@ def _decode_pdf_string(raw: bytes) -> str:
     return "".join(ch if ch >= " " else " " for ch in text)
 
 
-def _is_hidden_colour(op: str, args: list[float]) -> bool:
-    if op in ("g", "rg"):
-        return bool(args) and all(a >= 0.95 for a in args)
-    return bool(args) and all(a <= 0.05 for a in args)  # k
+def _is_white(nums: list[float]) -> bool:
+    """White per the plan: 1 gray / 3 RGB components all >= 0.95, or 4 CMYK all <= 0.05.
+
+    CMYK with every component >= 0.95 is rich black, not white, and stays visible.
+    """
+    if len(nums) in (1, 3):
+        return all(a >= 0.95 for a in nums)
+    if len(nums) == 4:
+        return all(a <= 0.05 for a in nums)
+    return False
+
+
+def _matrix_scale(nums: list[float]) -> float | None:
+    """sqrt(|det|) of the linear part of a 6-number matrix operand list."""
+    if len(nums) < 6:
+        return None
+    a, b, c, d = nums[-6:-2]
+    return math.sqrt(abs(a * d - b * c))
 
 
 def _run_content_stream(data: bytes, sink: _RunSink) -> None:
@@ -182,14 +209,17 @@ def _run_content_stream(data: bytes, sink: _RunSink) -> None:
     white = False
     mode = 0
     size = float("inf")
-    saved: list[tuple[bool, int, float]] = []
+    tm_scale = 1.0
+    ctm_scale = 1.0
+    saved: list[tuple[bool, int, float, float]] = []
     operands: list[object] = []
     arrays: list[list[bytes]] = []
+    overflow = 0  # '[' seen beyond the nesting cap, to keep ']' pairing right
     i = 0
     n = len(data)
 
     def show(raw: bytes) -> None:
-        hidden = white or mode == 3 or size < MIN_VISIBLE_FONT_SIZE
+        hidden = white or mode == 3 or size * tm_scale * ctm_scale < MIN_VISIBLE_FONT_SIZE
         sink.add(_decode_pdf_string(raw), hidden)
 
     while i < n and not sink.full:
@@ -223,10 +253,15 @@ def _run_content_stream(data: bytes, sink: _RunSink) -> None:
         elif c == 0x3E:  # >
             i += 2 if data[i + 1 : i + 2] == b">" else 1
         elif c == 0x5B:  # [
-            arrays.append([])
+            if len(arrays) < _MAX_ARRAY_DEPTH:
+                arrays.append([])
+            else:
+                overflow += 1
             i += 1
         elif c == 0x5D:  # ]
-            if arrays:
+            if overflow:
+                overflow -= 1
+            elif arrays:
                 operands.append(arrays.pop())
             i += 1
         elif c == 0x2F:  # name
@@ -247,23 +282,36 @@ def _run_content_stream(data: bytes, sink: _RunSink) -> None:
             except ValueError:
                 num = None
             if num is not None:
-                if not arrays:
+                if math.isfinite(num) and not arrays:
                     operands.append(num)
                 continue
             op = tok.decode("latin-1")
             nums = [o for o in operands if isinstance(o, float)]
             if op in ("g", "rg", "k"):
-                white = _is_hidden_colour(op, nums)
+                want = {"g": 1, "rg": 3, "k": 4}[op]
+                white = len(nums) >= want and _is_white(nums[-want:])
+            elif op == "cs":
+                white = False
+            elif op in ("sc", "scn"):
+                white = len(nums) == len(operands) and _is_white(nums)
             elif op == "Tf" and nums:
                 size = abs(nums[-1])
             elif op == "Tr" and nums:
                 mode = int(nums[-1])
+            elif op == "BT":
+                tm_scale = 1.0
+            elif op == "Tm":
+                tm_scale = _matrix_scale(nums) or (0.0 if len(nums) >= 6 else tm_scale)
+            elif op == "cm":
+                scale = _matrix_scale(nums)
+                if scale is not None:
+                    ctm_scale *= scale
             elif op == "q":
                 if len(saved) < 256:
-                    saved.append((white, mode, size))
+                    saved.append((white, mode, size, ctm_scale))
             elif op == "Q":
                 if saved:
-                    white, mode, size = saved.pop()
+                    white, mode, size, ctm_scale = saved.pop()
             elif op in ("Tj", "'", '"'):
                 if operands and isinstance(operands[-1], bytes):
                     show(operands[-1])
@@ -319,15 +367,19 @@ def extract_pdf(data: bytes) -> DocText:
         budget = MAX_TOTAL_DECOMPRESSED
         pos = 0
         while not sink.full and budget > 0:
+            scan_from = pos  # end of the previous stream
             m = _STREAM.search(data, pos)
             if m is None:
                 break
             end = data.find(b"endstream", m.end())
             end = len(data) if end < 0 else end
             pos = end + 9
-            obj = data.rfind(b"obj", 0, m.start())
-            dict_text = data[obj if obj >= 0 else 0 : m.start()]
-            if any(marker in dict_text for marker in _SKIP_STREAM_MARKERS):
+            # Bounded lookback: never before the previous stream's end (scan_from), so the total
+            # work across all streams stays linear in the file size.
+            lo = max(scan_from, m.start() - _STREAM_DICT_WINDOW)
+            obj = data.rfind(b"obj", lo, m.start())
+            dict_text = data[obj if obj >= 0 else lo : m.start()]
+            if _SKIP_STREAM.search(dict_text):
                 continue
             fm = _FILTER.search(dict_text)
             filters = re.findall(rb"/([A-Za-z0-9]+)", fm.group(1)) if fm else []
@@ -336,7 +388,10 @@ def extract_pdf(data: bytes) -> DocText:
                 continue
             budget -= len(body)
             if b"BT" in body and b"ET" in body:
-                _run_content_stream(body, sink)
+                try:
+                    _run_content_stream(body, sink)
+                except Exception:  # noqa: BLE001 - one bad stream loses only itself
+                    continue
     except Exception:  # noqa: BLE001 - untrusted input must never raise
         pass
     return sink.doc
@@ -349,17 +404,17 @@ _OOXML = {
     ".docx": (
         re.compile(r"^word/document\.xml$"),
         "</w:p>",
-        re.compile(r"<w:t(?:\s[^>]*)?>([^<]*)</w:t>"),
+        re.compile(r"<w:t(?:\s[^<>]*)?>([^<]*)</w:t>"),
     ),
     ".pptx": (
         re.compile(r"^ppt/slides/slide\d+\.xml$"),
         "</a:p>",
-        re.compile(r"<a:t(?:\s[^>]*)?>([^<]*)</a:t>"),
+        re.compile(r"<a:t(?:\s[^<>]*)?>([^<]*)</a:t>"),
     ),
     ".xlsx": (
         re.compile(r"^xl/sharedStrings\.xml$"),
         "</si>",
-        re.compile(r"<t(?:\s[^>]*)?>([^<]*)</t>"),
+        re.compile(r"<t(?:\s[^<>]*)?>([^<]*)</t>"),
     ),
 }
 

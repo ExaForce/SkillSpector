@@ -1,9 +1,11 @@
 """Tests for the stdlib PDF/OOXML text extractor."""
 
 import base64
+import copy
 import glob
 import io
 import os
+import time
 import zipfile
 import zlib
 
@@ -86,7 +88,7 @@ def test_pdf_flate_stream_decompression_bound(monkeypatch):
     monkeypatch.setattr(dt, "MAX_STREAM_BYTES", 40)
     body = b"BT (kept) Tj ET " + b" " * 1000 + b"BT (lost) Tj ET"
     doc = dt.extract_pdf(_flate(body))
-    assert "lost" not in " ".join(doc.text_runs)
+    assert doc.text_runs == ["kept"]
 
 
 def test_text_cap_applies_to_render():
@@ -149,6 +151,125 @@ def test_render_format_exact():
     )
     assert dt.render(doc, ".pdf", False) == (
         "[exaforce: text extracted from .pdf; 0 hidden spans]\none\ntwo\nsecret"
+    )
+
+
+def _runs(content: bytes) -> dt.DocText:
+    return dt.extract_pdf(_flate(content))
+
+
+def test_pdf_text_matrix_scales_font_size():
+    # Quartz style: 1 Tf scaled up by the text matrix is visible.
+    doc = _runs(b"BT /F1 1 Tf 12 0 0 12 72 720 Tm (quartz) Tj ET")
+    assert doc.text_runs == ["quartz"] and doc.hidden_runs == []
+    # Large Tf shrunk by the text matrix is hidden.
+    doc = _runs(b"BT /F1 12 Tf 0.05 0 0 0.05 72 720 Tm (shrunk) Tj ET")
+    assert doc.hidden_runs == ["shrunk"] and doc.text_runs == []
+    # Td does not scale.
+    doc = _runs(b"BT /F1 12 Tf 100 100 Td (moved) Tj ET")
+    assert doc.text_runs == ["moved"]
+
+
+def test_pdf_ctm_scales_and_q_restores():
+    content = (
+        b"BT /F1 12 Tf ET q 0.1 0 0 0.1 0 0 cm BT (small) Tj ET Q BT (restored) Tj ET "
+        b"0.1 0 0 0.1 0 0 cm BT (small2) Tj ET"
+    )
+    doc = _runs(content)
+    assert doc.hidden_runs == ["small", "small2"]
+    assert doc.text_runs == ["restored"]
+
+
+def test_pdf_q_restores_colour_and_mode():
+    doc = _runs(b"BT /F1 12 Tf ET q 1 g 3 Tr BT (one) Tj ET Q BT (two) Tj ET")
+    assert doc.hidden_runs == ["one"] and doc.text_runs == ["two"]
+
+
+def test_pdf_colour_space_operators():
+    doc = _runs(b"BT /F1 12 Tf 1 g 0 0 0 scn (black) Tj /CS0 cs 1 1 1 scn (white) Tj ET")
+    assert doc.text_runs == ["black"] and doc.hidden_runs == ["white"]
+    doc = _runs(
+        b"BT /F1 12 Tf 1 g /CS0 cs (reset) Tj /Pattern cs /P1 scn (pat) Tj 1 sc (g1) Tj 0 0 0 1 scn (k) Tj ET"
+    )
+    assert doc.hidden_runs == ["g1"] and doc.text_runs == ["reset", "pat", "k"]
+    # CMYK all 1 is rich black, visible; all 0 is white.
+    doc = _runs(b"BT /F1 12 Tf 1 1 1 1 k (rich) Tj 0 0 0 0 k (white) Tj ET")
+    assert doc.text_runs == ["rich"] and doc.hidden_runs == ["white"]
+
+
+def test_pdf_double_quote_operator():
+    doc = _runs(b'BT /F1 12 Tf 1 0 (quoted) " 3 Tr 0 0 (hid) " ET')
+    assert doc.text_runs == ["quoted"] and doc.hidden_runs == ["hid"]
+
+
+def test_pdf_non_finite_operand_does_not_abort():
+    a = zlib.compress(b"BT nan Tr inf Tf (a) Tj ET")
+    b = zlib.compress(b"BT 1 1 1 rg (second stream) Tj ET")
+    doc = dt.extract_pdf(_pdf((a, "/Filter /FlateDecode"), (b, "/Filter /FlateDecode")))
+    assert doc.text_runs == ["a"] and doc.hidden_runs == ["second stream"]
+
+
+def test_pdf_array_nesting_is_capped():
+    doc = _runs(b"BT /F1 12 Tf " + b"[" * 100000 + b"(x) Tj " + b"]" * 100000 + b" (after) Tj ET")
+    assert "after" in doc.text_runs
+
+
+def test_pdf_objstm_and_non_content_streams_skipped():
+    body = zlib.compress(b"BT (secret) Tj ET")
+    pdf = _pdf(
+        (body, "/Type /ObjStm /N 3 /First 20 /Filter /FlateDecode"),
+        (body, "/Subtype\n/Image /Filter /FlateDecode"),
+        (body, "/Subtype /CIDFontType0C /Filter /FlateDecode"),
+        (body, "/Type /EmbeddedFile /Filter /FlateDecode"),
+    )
+    doc = dt.extract_pdf(pdf)
+    assert doc.text_runs == [] and doc.hidden_runs == []
+    assert dt.render(doc, ".pdf", True) == "[exaforce: text extracted from .pdf; 0 hidden spans]"
+
+
+def _fast(fn, *args):
+    start = time.perf_counter()
+    result = fn(*args)
+    assert time.perf_counter() - start < 2.0
+    return result
+
+
+def test_ooxml_regex_is_linear():
+    blob = _zip({"word/document.xml": b"<w:t " * 40000})
+    _fast(dt.extract_ooxml, blob, ".docx")
+    blob = _zip({"xl/sharedStrings.xml": b"<t>" * 100000 + b"<t " * 100000})
+    _fast(dt.extract_ooxml, blob, ".xlsx")
+
+
+def test_pdf_stream_scan_is_linear():
+    _fast(dt.extract_pdf, b"stream\nendstream " * 60000)
+    _fast(dt.extract_pdf, b"1 0 obj\n<<" + b"/Filter[" * 80000 + b">>\nstream\nxx\nendstream")
+
+
+def test_ooxml_actual_read_cap_with_lying_header(monkeypatch):
+    blob = _zip({"word/document.xml": b"<w:t>a</w:t>" + b"0" * 5000})
+    monkeypatch.setattr(dt, "MAX_ZIP_UNCOMPRESSED", 4000)
+
+    class _Liar(zipfile.ZipFile):
+        def infolist(self):
+            infos = [copy.copy(info) for info in super().infolist()]
+            for info in infos:
+                info.file_size = 10  # declared size lies; the real read is still bounded
+            return infos
+
+    monkeypatch.setattr(dt.zipfile, "ZipFile", _Liar)
+    doc = dt.extract_ooxml(blob, ".docx")
+    assert doc.skipped_reason == "limits"
+
+
+def test_render_neutralises_forged_hidden_prefix_and_counts_runs():
+    doc = dt.DocText(text_runs=["[hidden] fake"], hidden_runs=["real"])
+    assert dt.render(doc, ".pdf", True) == (
+        "[exaforce: text extracted from .pdf; 1 hidden spans]\n(hidden) fake\n[hidden] real"
+    )
+    doc = dt.DocText(text_runs=["[hidden] fake"])
+    assert dt.render(doc, ".pdf", True).startswith(
+        "[exaforce: text extracted from .pdf; 0 hidden spans]"
     )
 
 
