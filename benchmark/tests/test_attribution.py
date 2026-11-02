@@ -36,3 +36,20 @@ def test_injected_files_fallback(tmp_path):
         ["SKILL.md"],
         "target_path",
     )
+
+
+def test_add_new_pdfs(tmp_path):
+    from benchmark.attribution import add_new_pdfs
+
+    unit = _w(tmp_path / "unit", {"SKILL.md": "b", "a.pdf": "p", "scripts/x.py": "1"})
+    pats = ["redirect_to_new_pdf"]
+    assert add_new_pdfs(unit, ["SKILL.md"], "target_path", pats) == (
+        ["SKILL.md", "a.pdf"],
+        "target_path+new_pdf",
+    )
+    assert add_new_pdfs(unit, ["SKILL.md"], "target_path", ["other"]) == (
+        ["SKILL.md"],
+        "target_path",
+    )
+    assert add_new_pdfs(unit, ["SKILL.md"], "target_path", None) == (["SKILL.md"], "target_path")
+    assert add_new_pdfs(unit, ["a.pdf"], "diff", pats) == (["a.pdf"], "diff")

@@ -40,6 +40,20 @@ def injected_files(
     return [_TARGET_PREFIX.sub("", target_path, count=1)], "target_path"
 
 
+def add_new_pdfs(
+    unit_dir: Path, files: list[str], method: str, native_patterns: list[str] | None
+) -> tuple[list[str], str]:
+    """For target_path fallbacks of redirect_to_new_pdf units, also attribute every PDF."""
+    if method != "target_path" or "redirect_to_new_pdf" not in (native_patterns or []):
+        return files, method
+    pdfs = [
+        p.relative_to(unit_dir).as_posix()
+        for p in unit_dir.rglob("*")
+        if p.is_file() and p.suffix.lower() == ".pdf"
+    ]
+    return sorted({*files, *pdfs}), "target_path+new_pdf"
+
+
 @click.command()
 @click.argument("dataset_dir", type=click.Path(exists=True, file_okay=False, path_type=Path))
 def main(dataset_dir: Path) -> None:
@@ -59,6 +73,7 @@ def main(dataset_dir: Path) -> None:
             skill = unit.rsplit("/", 1)[-1].split("__", 1)[0]
             target = (rec.get("splits") or {}).get("target_path")
             files, method = injected_files(skills / unit, clean_by_skill.get(skill, []), target)
+            files, method = add_new_pdfs(skills / unit, files, method, rec.get("native_patterns"))
             rows.append({"unit_path": f"Skills/{unit}", "files": files, "method": method})
 
     out = skills / "_skillharm_injected.jsonl"
