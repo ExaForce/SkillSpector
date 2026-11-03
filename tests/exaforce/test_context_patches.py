@@ -105,3 +105,35 @@ def test_unparseable_manifest_still_emits_header(monkeypatch):
 
 def test_node_recorded_on_instance():
     assert _analyzer(SDI)._exa_node == SDI
+
+
+def test_headers_map_is_thread_safe(monkeypatch):
+    import sys
+    import threading
+
+    monkeypatch.setenv(cp.ENV_VAR, "ssd")
+    errors: list[BaseException] = []
+    cache = _cache()
+    paths = sorted(cache)
+
+    def work():
+        try:
+            a = _analyzer(SSD)
+            for _ in range(150):
+                batches = a.get_batches(paths, cache)
+                for b in batches:
+                    a.build_prompt(b)
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    old = sys.getswitchinterval()
+    sys.setswitchinterval(1e-6)
+    try:
+        threads = [threading.Thread(target=work) for _ in range(6)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+    finally:
+        sys.setswitchinterval(old)
+    assert errors == []

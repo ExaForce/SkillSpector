@@ -23,6 +23,7 @@ from __future__ import annotations
 import inspect
 import os
 import re
+import threading
 import weakref
 
 import yaml
@@ -42,6 +43,8 @@ _NODES_BY_MODE = {"ssd": frozenset({_SSD}), "semantic": frozenset({_SSD, _SDI, _
 # id(batch) -> (weakref to batch, header). Batch is unhashable, so key on id and
 # confirm identity through the weakref before use (ids can be reused).
 _HEADERS: dict[int, tuple[weakref.ref, str]] = {}
+# LangGraph runs the semantic analyzers in threads that share _HEADERS.
+_HEADERS_LOCK = threading.Lock()
 
 
 def selected_nodes() -> frozenset[str]:
@@ -84,19 +87,24 @@ def _get_batches_interceptor(original, self, args, kwargs):
     if not refs:
         return batches
     manifest = _manifest(skill_md)
-    for dead in [k for k, (ref, _) in _HEADERS.items() if ref() is None]:
-        del _HEADERS[dead]
-    for batch in batches:
-        if batch.file_path in refs:
-            header = _skill_refs.context_header(manifest, refs[batch.file_path])
-            _HEADERS[id(batch)] = (weakref.ref(batch), header)
+    new = [
+        (id(batch), weakref.ref(batch), _skill_refs.context_header(manifest, refs[batch.file_path]))
+        for batch in batches
+        if batch.file_path in refs
+    ]
+    with _HEADERS_LOCK:
+        for dead in [k for k, (ref, _) in _HEADERS.items() if ref() is None]:
+            del _HEADERS[dead]
+        for key, ref, header in new:
+            _HEADERS[key] = (ref, header)
     return batches
 
 
 def _build_prompt_interceptor(original, self, args, kwargs):
     prompt = original(self, *args, **kwargs)
     batch = inspect.signature(original).bind(self, *args, **kwargs).arguments["batch"]
-    entry = _HEADERS.pop(id(batch), None)
+    with _HEADERS_LOCK:
+        entry = _HEADERS.pop(id(batch), None)
     if entry is not None and entry[0]() is batch:
         return entry[1] + "\n\n" + prompt
     return prompt
