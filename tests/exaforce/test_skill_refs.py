@@ -1,5 +1,7 @@
 """Tests for skill reference detection and instruction-flow bundle building."""
 
+import pytest
+
 from skillspector.exaforce._skill_refs import (
     Bundle,
     build_bundle,
@@ -127,3 +129,47 @@ def test_dot_slash_prefix_matches_root():
     comps = ["README.md", "references/README.md"]
     assert list(referenced_files("See ./README.md", comps)) == ["README.md"]
     assert list(referenced_files("See ../README.md", comps)) == []
+
+
+def _old_truncate(lines):
+    lines = list(lines)
+    while len(lines) > 1 and estimate_tokens("\n".join(lines)) > 24_000:
+        lines.pop()
+    return lines
+
+
+@pytest.mark.parametrize(
+    "md",
+    [
+        "",
+        "short",
+        "\n".join("x" * 99 for _ in range(2000)),
+        "\n".join("ab" * (i % 7 + 1) for i in range(50_000)),
+        "y" * 200_000,
+        "\n\n\n" * 40_000,
+    ],
+)
+def test_skill_md_truncation_matches_old_algorithm(md):
+    expected = "\n".join(_old_truncate(["=== FILE: SKILL.md ===", *md.split("\n")]))
+    assert build_bundle("SKILL.md", {"SKILL.md": md}, {}).text == expected
+
+
+def test_skill_md_truncation_exact_boundary():
+    header = "=== FILE: SKILL.md ==="
+    # header + "\n" + body is exactly 24_000 * 4 + 3 chars (still 24_000 tokens), then one more char.
+    for extra in (0, 1, 4):
+        body_len = 24_000 * 4 + 3 - len(header) - 1 + extra
+        md = "a" * (body_len // 2) + "\n" + "a" * (body_len - body_len // 2 - 1)
+        expected = "\n".join(_old_truncate([header, *md.split("\n")]))
+        assert build_bundle("SKILL.md", {"SKILL.md": md}, {}).text == expected
+
+
+def test_large_skill_md_of_short_lines_bundles_quickly():
+    import time
+
+    md = "\n".join("line" for _ in range(250_000))
+    assert len(md) > 1_000_000
+    start = time.perf_counter()
+    bundle = build_bundle("SKILL.md", {"SKILL.md": md}, {})
+    assert time.perf_counter() - start < 1.0
+    assert estimate_tokens(bundle.text) <= 24_000

@@ -10,7 +10,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-from skillspector.llm_analyzer_base import estimate_tokens
+from skillspector.llm_analyzer_base import CHARS_PER_TOKEN, estimate_tokens
 
 MAX_HEADER_LINES = 8
 MAX_FIELD_CHARS = 300
@@ -103,8 +103,15 @@ def build_bundle(skill_md_path: str, file_cache: dict[str, str], refs: dict[str,
     truncated by whole lines if it exceeds the cap.
     """
     skill_lines = _section(skill_md_path, file_cache.get(skill_md_path, ""))
-    while len(skill_lines) > 1 and estimate_tokens("\n".join(skill_lines)) > MAX_BUNDLE_TOKENS:
-        skill_lines.pop()
+    # Keep the longest line prefix (at least the separator) whose joined estimate fits.
+    total = len(skill_lines[0])
+    keep = 1
+    for line in skill_lines[1:]:
+        total += 1 + len(line)
+        if total // CHARS_PER_TOKEN > MAX_BUNDLE_TOKENS:
+            break
+        keep += 1
+    del skill_lines[keep:]
     lines = list(skill_lines)
     offsets = [(1, skill_md_path, 0)]
 

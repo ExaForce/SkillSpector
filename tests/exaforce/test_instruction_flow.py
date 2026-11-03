@@ -206,3 +206,24 @@ def test_prompt_is_generic_and_asks_necessity():
     assert "necessity" in lowered
     for banned in ("malskillbench", "skillharm", "benchmark", "http://", "https://"):
         assert banned not in lowered
+
+
+def test_no_references_skips_bundle_build(monkeypatch):
+    def boom(*a, **k):
+        raise AssertionError("build_bundle must not run without references")
+
+    monkeypatch.setattr(iff._skill_refs, "build_bundle", boom)
+    assert iff.instruction_bundle({"SKILL.md": "---\nname: x\n---\nNothing to read.\n"}) is None
+
+
+def test_get_batches_reuses_prebuilt_bundle(llm, monkeypatch):
+    cache = {"SKILL.md": SKILL_MD, "guide.md": GUIDE, "tool.sh": TOOL}
+    bundle = iff.instruction_bundle(cache)
+    monkeypatch.setattr(
+        iff,
+        "instruction_bundle",
+        lambda fc: (_ for _ in ()).throw(AssertionError("rebuilt")),
+    )
+    a = iff.InstructionFlowAnalyzer(base_prompt="p", model="stub", node=iff.ANALYZER_ID)
+    a._bundle = bundle
+    assert a.get_batches(sorted(cache), cache)[0].content == bundle.text

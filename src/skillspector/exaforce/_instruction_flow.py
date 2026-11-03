@@ -118,6 +118,8 @@ def instruction_bundle(file_cache: dict[str, str]) -> _skill_refs.Bundle | None:
     if skill_path is None:
         return None
     refs = _skill_refs.referenced_files(file_cache[skill_path], sorted(file_cache))
+    if not refs:
+        return None
     bundle = _skill_refs.build_bundle(skill_path, file_cache, refs)
     return bundle if len(bundle.offsets) > 1 else None
 
@@ -142,7 +144,8 @@ class InstructionFlowAnalyzer(LLMAnalyzerBase):
         findings: list[Finding] | None = None,
     ) -> list[Batch]:
         """Exactly one batch holding the bundle, labelled with root SKILL.md; none if N/A."""
-        self._bundle = instruction_bundle(file_cache)
+        if self._bundle is None:
+            self._bundle = instruction_bundle(file_cache)
         if self._bundle is None:
             return []
         return [Batch(file_path=self._bundle.offsets[0][1], content=self._bundle.text)]
@@ -242,7 +245,8 @@ def node(state: SkillspectorState) -> AnalyzerNodeResponse:
         return _status_only("disabled", LedgerReason.DISABLED_BY_CONFIGURATION)
 
     file_cache: dict[str, str] = state.get("file_cache") or {}
-    if instruction_bundle(file_cache) is None:
+    bundle = instruction_bundle(file_cache)
+    if bundle is None:
         return _status_only("not_applicable", LedgerReason.NO_APPLICABLE_FILES)
 
     batches: list[Batch] = []
@@ -251,6 +255,7 @@ def node(state: SkillspectorState) -> AnalyzerNodeResponse:
         analyzer = InstructionFlowAnalyzer(
             base_prompt=INSTRUCTION_FLOW_PROMPT, model=_model(state), node=ANALYZER_ID
         )
+        analyzer._bundle = bundle
         batches = analyzer.get_batches(sorted(file_cache), file_cache)
         results = analyzer.run_batches(batches)
         outcome = getattr(analyzer, "_last_batch_outcome", BatchExecutionResult(successful=results))
