@@ -20,6 +20,11 @@ row per run, and one decision block per plan below the table.
 | P1 | dev | gate=confirmed | 1 | `46bf363f7145` | a7497284 | `SKILLSPECTOR_EXA_SEMANTIC_GATE=confirmed` | 1,364 (p1-dev) | OK (4.8%) | TP 188 / FP 210 |
 | P1 | dev | gate=confirmed | 2 | `4952d46c49a0` | a7497284 | `SKILLSPECTOR_EXA_SEMANTIC_GATE=confirmed` | 1,364 (p1-dev) | OK (4.8%) | TP 183 / FP 215 |
 | P1 | dev | control | 3 | `2271319bfae5` | a7497284 | none | 1,364 (p1-dev) | UNHEALTHY: dropped 6.1% | TP 153 / FP 216; replacement for control 1, also unhealthy, so not used |
+| P2 | preflight | B | 1 | `44839f58f160` | e5de1bf2 | `SKILLSPECTOR_EXA_DOC_TEXT=on SKILLSPECTOR_EXA_HIDDEN_TEXT=on` | 1 | OK | `pptx__skillharm-fpp-a4db25e26d`: TP |
+| P2 | dev | control | 1 | `dec8d72989b3` | e5de1bf2 | none | 2,154 (p2-dev) | OK | TP 176 / FP 223 |
+| P2 | dev | A doc_text | 1 | `ab0a8478cbe9` | e5de1bf2 | `SKILLSPECTOR_EXA_DOC_TEXT=on` | 2,154 (p2-dev) | OK | TP 213 / FP 226 |
+| P2 | dev | B doc_text+hidden | 1 | `d05bd241b62a` | e5de1bf2 | `SKILLSPECTOR_EXA_DOC_TEXT=on SKILLSPECTOR_EXA_HIDDEN_TEXT=on` | 2,154 (p2-dev) | OK | TP 213 / FP 210 |
+| P2 | dev | control | 2 | `6f4afaba94e5` | e5de1bf2 | none | 261 of 2,154 | UNHEALTHY: hung; dropped 6.1% | harness deadlock: no progress after 2026-11-02 19:46, all workers idle in `sem_wait`, per-scan timeout never fired; killed 2026-11-03; not usable |
 
 ## P0
 
@@ -124,3 +129,21 @@ not run, because `CAP=none` offline.
   FP spread across same-day replicates was 21 (195–216), and dev LLM drop rates sat at 4.8–6.1%, right at the 5%
   health threshold.
 - Suggestion (spec unchanged): pre-register a rule for unhealthy control replicates in the spec.
+
+## P2
+
+### Status: INCOMPLETE (no verdict)
+
+- Code (Tasks 1-3) is committed with both flags default off: `SKILLSPECTOR_EXA_DOC_TEXT`, `SKILLSPECTOR_EXA_HIDDEN_TEXT`
+  (commits `ead32f4b`..`e5de1bf2`).
+- Evaluation sets (from `baseline-v2`):
+  - `results/evalsets/p2-focus.txt`: 900 units; all 283 malicious kept (SkillHarm 276, MSB 7), 617 benign sampled.
+  - `results/evalsets/p2-dev.txt` = core-dev ∪ focus: 2,154 units (672 malicious / 1,482 benign); `splits.tsv`
+    regenerated: 2,154 dev / 10,564 holdout.
+  - `results/evalsets/p2-guard-md-comment.txt`: 208 benign units with `<!--` in a `.md` file (44 in p2-dev).
+  - The focus malicious units are 97.5% SkillHarm (one generator), so they do not meet the ≥2-corpora evidence rule.
+- Dev arms: only replicate 1 of each arm completed (rows above). Single replicates cannot be judged with the
+  pre-registered rule, so there is no PROMISING/REJECT verdict. Replicate-1 deltas against control, for orientation
+  only: A +37 TP / +3 FP; B +37 TP / −13 FP.
+- Control replicate 2 hung (harness deadlock, see its row). The user chose to move to P3 instead of re-running; P2's
+  dev arms and final acceptance remain to be done.
