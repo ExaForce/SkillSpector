@@ -25,6 +25,25 @@ row per run, and one decision block per plan below the table.
 | P2 | dev | A doc_text | 1 | `ab0a8478cbe9` | e5de1bf2 | `SKILLSPECTOR_EXA_DOC_TEXT=on` | 2,154 (p2-dev) | OK | TP 213 / FP 226 |
 | P2 | dev | B doc_text+hidden | 1 | `d05bd241b62a` | e5de1bf2 | `SKILLSPECTOR_EXA_DOC_TEXT=on SKILLSPECTOR_EXA_HIDDEN_TEXT=on` | 2,154 (p2-dev) | OK | TP 213 / FP 210 |
 | P2 | dev | control | 2 | `6f4afaba94e5` | e5de1bf2 | none | 261 of 2,154 | UNHEALTHY: hung; dropped 6.1% | harness deadlock: no progress after 2026-11-02 19:46, all workers idle in `sem_wait`, per-scan timeout never fired; killed 2026-11-03; not usable |
+| P3 | preflight | all flags | 1 | `f226e1b6ec3b` | d22fc89c | `SKILLSPECTOR_EXA_SKILL_CONTEXT=semantic SKILLSPECTOR_EXA_INSTRUCTION_FLOW=on` | 1 | OK | `pptx__skillharm-fpp-a4db25e26d`: TP, LLM 6/6 |
+| P3 | dev | control | 1 | `820f4e4e4e32` | d22fc89c | none | 2,112 (p3-dev) | UNHEALTHY: dropped 10.7%, ERROR 8.7% (184) | TP 304 / FP 191; used (P3-R12) |
+| P3 | dev | A1 ctx=ssd | 1 | `64f64351fcc3` | d22fc89c | `SKILLSPECTOR_EXA_SKILL_CONTEXT=ssd` | 2,112 (p3-dev) | UNHEALTHY: dropped 7.9%, ERROR 2.9% (62) | TP 342 / FP 208; used (P3-R12) |
+| P3 | dev | A2 ctx=semantic | 1 | `397dcabd6f82` | d22fc89c | `SKILLSPECTOR_EXA_SKILL_CONTEXT=semantic` | 2,112 (p3-dev) | UNHEALTHY: dropped 9.3%, ERROR 1.3% (28) | TP 367 / FP 224; used (P3-R12) |
+| P3 | dev | B1 if=on | 1 | `9b07fabc029c` | d22fc89c | `SKILLSPECTOR_EXA_INSTRUCTION_FLOW=on` | 2,112 (p3-dev) | UNHEALTHY: dropped 6.9% | TP 464 / FP 236; used (P3-R12) |
+| P3 | dev | control | 2 | `e89e74415880` | d22fc89c | none | 2,112 (p3-dev) | UNHEALTHY: dropped 5.8% | TP 394 / FP 221; used (P3-R12) |
+| P3 | dev | A1 ctx=ssd | 2 | `81b9efffe9c3` | d22fc89c | `SKILLSPECTOR_EXA_SKILL_CONTEXT=ssd` | 2,112 (p3-dev) | UNHEALTHY: dropped 5.3% | TP 413 / FP 222; used (P3-R12) |
+| P3 | dev | A2 ctx=semantic | 2 | `c4b4583ff458` | d22fc89c | `SKILLSPECTOR_EXA_SKILL_CONTEXT=semantic` | 2,112 (p3-dev) | UNHEALTHY: dropped 5.2% | TP 385 / FP 229; replaced by healthy r2b `4d56e7b6db30`, not used |
+| P3 | dev | B1 if=on | 2 | `836df5d8b1f9` | d22fc89c | `SKILLSPECTOR_EXA_INSTRUCTION_FLOW=on` | 2,112 (p3-dev) | UNHEALTHY: dropped 5.5% | TP 480 / FP 235; used (P3-R12) |
+| P3 | dev | control | 1b | `bfcbcbe585e5` | d22fc89c | none | 2,112 (p3-dev) | UNHEALTHY: dropped 5.0% | TP 402 / FP 216; replacement for r1, also unhealthy; used |
+| P3 | dev | A1 ctx=ssd | 1b | `a88091f5b7bc` | d22fc89c | `SKILLSPECTOR_EXA_SKILL_CONTEXT=ssd` | 2,112 (p3-dev) | UNHEALTHY: dropped 5.1% | TP 404 / FP 215; used |
+| P3 | dev | A2 ctx=semantic | 1b | `40a9a3b9c46c` | d22fc89c | `SKILLSPECTOR_EXA_SKILL_CONTEXT=semantic` | 2,112 (p3-dev) | UNHEALTHY: dropped 5.4% | TP 394 / FP 223; used |
+| P3 | dev | B1 if=on | 1b | `a9949fa84c95` | d22fc89c | `SKILLSPECTOR_EXA_INSTRUCTION_FLOW=on` | 2,112 (p3-dev) | UNHEALTHY: dropped 5.6% | TP 471 / FP 249; used |
+| P3 | dev | control | 2b | `2e6e81859349` | d22fc89c | none | 2,112 (p3-dev) | UNHEALTHY: dropped 5.3% | TP 387 / FP 202; used |
+| P3 | dev | A1 ctx=ssd | 2b | `df2855f770be` | d22fc89c | `SKILLSPECTOR_EXA_SKILL_CONTEXT=ssd` | 2,112 (p3-dev) | UNHEALTHY: dropped 5.4% | TP 421 / FP 222; used |
+| P3 | dev | A2 ctx=semantic | 2b | `4d56e7b6db30` | d22fc89c | `SKILLSPECTOR_EXA_SKILL_CONTEXT=semantic` | 2,112 (p3-dev) | OK (4.0%) | TP 406 / FP 242; replaces r2 |
+| P3 | dev | B1 if=on | 2b | `2a94f96eb7c8` | d22fc89c | `SKILLSPECTOR_EXA_INSTRUCTION_FLOW=on` | 2,112 (p3-dev) | UNHEALTHY: dropped 5.4% | TP 470 / FP 231; used |
+| P3 | dev | B3 if=on prompt rev | 1 | `e8688634c909` | 0c580f30 | `SKILLSPECTOR_EXA_INSTRUCTION_FLOW=on` | 2,112 (p3-dev) | OK (4.5%) | TP 489 / FP 244 |
+| P3 | dev | B3 if=on prompt rev | 2 | `09b9a0110cf8` | 0c580f30 | `SKILLSPECTOR_EXA_INSTRUCTION_FLOW=on` | 2,112 (p3-dev) | UNHEALTHY: dropped 5.8% | TP 480 / FP 230; hung at 2,111/2,112 from 15:07 (watchdog bug, see P3-R17), killed 17:10 and resumed with `--run-id` for the last unit |
 
 ## P0
 
@@ -147,3 +166,83 @@ not run, because `CAP=none` offline.
   only: A +37 TP / +3 FP; B +37 TP / −13 FP.
 - Control replicate 2 hung (harness deadlock, see its row). The user chose to move to P3 instead of re-running; P2's
   dev arms and final acceptance remain to be done.
+
+## P3
+
+### Evaluation sets (Task 4)
+
+- `results/evalsets/p3-focus.txt`: 900 units from baseline-v2 (`e16e394f65c3`): every unit in clusters C02 (423),
+  C06 (149) and C11 (210), plus 118 benign multi-doc units. The plan's `--where` clause would have selected 900
+  malicious units and no benign ones; the focus was instead built as cluster clause OR benign multi-doc, cap 900
+  (ruling P3-R3). The exact command is in `results/evalsets/README.md`.
+- `results/evalsets/p3-dev.txt` = core-dev ∪ focus: 2,112 units. Of these, 1,078 are malicious (FN 673 / TP 405 at
+  baseline-v2) and 1,034 benign (FP 208 / TN 826). `splits.tsv` was regenerated: 2,650 dev / 10,068 holdout.
+- Multi-doc guard: the 534 benign p3-dev units that have a non-SKILL `.md` component at baseline-v2 (FP 138 / TN 396
+  there). SQL:
+  ```sql
+  CREATE TEMP TABLE dev AS SELECT column0 AS unit_path FROM read_csv('results/evalsets/p3-dev.txt', header=false, columns={'column0':'VARCHAR'});
+  CREATE TEMP TABLE guard AS
+    SELECT DISTINCT e.unit_path FROM evaluation e JOIN dev USING (unit_path)
+    WHERE e.run_id='e16e394f65c3' AND NOT e.truth_malicious
+      AND e.unit_path IN (SELECT unit_path FROM components WHERE run_id='e16e394f65c3'
+                          AND path ILIKE '%.md' AND path NOT ILIKE '%SKILL.md');
+  -- guard FP of run R:
+  SELECT count(*) FROM evaluation e JOIN guard USING (unit_path) WHERE e.run_id = R AND e.predicted_malicious;
+  ```
+
+### Dev arms (Task 4)
+
+All 18 dev runs were made on 2026-11-03 on `p3-dev.txt`. Every run except B3 used tree `d22fc89c`; B3 used
+`0c580f30`, which changes only the IF1 prompt. Candidates:
+- A1: `SKILL_CONTEXT=ssd`;
+- A2: `SKILL_CONTEXT=semantic`;
+- B1: `INSTRUCTION_FLOW=on`;
+- B3: B1 with one prompt revision.
+
+B2 was not run, because P1's gate was rejected (P3-R5).
+
+**Unhealthy replicates (P3-R12, the same rule as P2-R7).** All 8 first replicates failed `health`. Each was replaced
+once, on the same tree and the same day. Only A2 r2b was healthy, so it replaces A2 r2. Every other arm uses all its
+replicates: means, with noise floors from the range.
+
+The drops come from the endpoint: across 16 runs, 459 units dropped calls in only 1 run and 1 unit dropped in all 16.
+They were not caused by any flag. Control r1 also had 184 ERROR outcomes, and it alone sets N_TP.
+
+| arm | runs | TP | FP | recall | precision | C02 recall (423) | cross_file recall (148) | SkillHarm attributed | median s | p95 s | LLM calls/scan | guard FP |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| control | 4 | 371.8 | 207.5 | 0.352 | 0.641 | 0.163 | 0.439 | 0.166 | 26.9 | 205.1 | 4.39 | 132.75 |
+| A1 ctx=ssd | 4 | 395.0 | 216.8 | 0.371 | 0.645 | 0.175 | 0.488 | 0.176 | 25.7 (0.96×) | 161.2 | 4.40 | 145.5 (+12.8) |
+| A2 ctx=semantic | 3 | 389.0 | 229.7 | 0.364 | 0.629 | 0.155 | 0.464 | 0.161 | 26.0 (0.97×) | 156.0 | 4.40 | 155.3 (+22.6) |
+| B1 if=on | 4 | 471.2 | 237.8 | 0.437 | 0.665 | 0.262 | 0.551 | 0.271 | 27.8 (1.03×) | 149.2 | 5.09 | 154.75 (+22.0) |
+| B3 if=on, rev | 2 | 484.5 | 237.0 | 0.449 | 0.672 | 0.287 | 0.561 | 0.287 | 31.2 (1.16×) | 137.0 | 5.09 | 164.0 (+31.25) |
+
+Columns are means over the runs. Scan times are pooled over all scans of the arm (`classifications.run_time`). The
+recall slices use `_boundary_features.jsonl` (`boundary_cluster`) and `_boundary_labels.jsonl` (`cross_file`).
+
+`uv run arms` against the four controls (N_TP = 98, N_FP = 30):
+
+| arm | ΔTP | ΔFP | rule | time guard | guard FP ≤ N_FP | verdict |
+|---|---|---|---|---|---|---|
+| A1 | +23.2 | +9.2 | ΔTP < 196 | pass (≤1.25×) | pass | **REJECT** |
+| A2 | +17.2 | +22.2 | ΔTP < 196 | pass (≤1.25×) | pass | **REJECT** |
+| B1 | +99.5 | +30.2 | ΔTP < 196; ΔFP > max(30, 12.4) | pass (≤1.40×) | pass | **REJECT** |
+| B3 | +112.8 | +29.5 | ΔTP < 196; r2 unhealthy | pass (≤1.40×) | **fail** (+31.25) | **REJECT** |
+
+- **Sensitivity check (not the verdict).** Without control r1 (the 184-ERROR run), N_TP = 15 and N_FP = 14.
+  - B1 is then +77 TP / +25 FP, and B3 +90 / +24. Both fail ΔFP ≤ max(14, ΔTP/8), at about 3–4 extra TPs per extra
+    FP against the required 8.
+  - A1 and A2 are still about +20 TP or less.
+  - The verdicts do not depend on the outlier.
+- **No PROMISING (a) or (b) arm**, so no combined arm was run.
+- **B3 error classes**, written before the edit, from 10 IF1-caused FPs and 10 FNs (3 opened):
+  - FP-a: a code or config weakness was reported instead of an instructed action (5/10).
+  - FP-b: a bundled script's capability was flagged when nothing tells the agent to run it (3/10).
+  - FP-c: an optional, purpose-fitting step was flagged (2/10).
+  - FN-a: a referenced setup/baseline step that suppresses or rewrites the skill's own results was read as
+    configuration.
+  - FN-b: a remote script piped to a shell was read as a routine install.
+  - FN-c: instructions inside a PDF (needs P2's DOC_TEXT; not addressed).
+  - Result: B3 added TP (+13 over B1) but did not reduce FP. FP-a/b/c were not the dominant FP source.
+- **Structural limit of B1/B3.** One HIGH `EXA-IF1` at confidence c adds 25·c risk points, and the threshold is 50.
+  In B1 r2, 74 malicious units that are FN in both B1 replicates carry a HIGH IF1 finding. Severity is fixed at HIGH
+  or MEDIUM by the plan, so no prompt revision can convert these.
