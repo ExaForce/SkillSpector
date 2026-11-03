@@ -25,7 +25,9 @@ row per run, and one decision block per plan below the table.
 | P2 | dev | A doc_text | 1 | `ab0a8478cbe9` | e5de1bf2 | `SKILLSPECTOR_EXA_DOC_TEXT=on` | 2,154 (p2-dev) | OK | TP 213 / FP 226 |
 | P2 | dev | B doc_text+hidden | 1 | `d05bd241b62a` | e5de1bf2 | `SKILLSPECTOR_EXA_DOC_TEXT=on SKILLSPECTOR_EXA_HIDDEN_TEXT=on` | 2,154 (p2-dev) | OK | TP 213 / FP 210 |
 | P2 | dev | control | 2 | `6f4afaba94e5` | e5de1bf2 | none | 261 of 2,154 | UNHEALTHY: hung; dropped 6.1% | harness deadlock: no progress after 2026-11-02 19:46, all workers idle in `sem_wait`, per-scan timeout never fired; killed 2026-11-03; not usable |
-| P3 | preflight | all flags | 1 | `f226e1b6ec3b` | d22fc89c | `SKILLSPECTOR_EXA_SKILL_CONTEXT=semantic SKILLSPECTOR_EXA_INSTRUCTION_FLOW=on` | 1 | OK | `pptx__skillharm-fpp-a4db25e26d`: TP, LLM 6/6 |
+| P3 | e2e | B1 if=on | 1 | `c8b5173f1bd8` | 5439b4ef + uncommitted Task 3 | `SKILLSPECTOR_EXA_INSTRUCTION_FLOW=on` | 1 | OK | Task 3 E2E: no crash, LLM 6/6, 0 EXA-IF1 in the report |
+| P3 | e2e | B1 if=on | 2 | `28f86fe1f857` | 5439b4ef + uncommitted Task 3 | `SKILLSPECTOR_EXA_INSTRUCTION_FLOW=on` | 1 | OK | Task 3 E2E repeat: 0 EXA-IF1 (a direct node call emitted HIGH IF1) |
+| P3 | preflight | all flags | 1 | `f226e1b6ec3b` | d22fc89c | `SKILLSPECTOR_EXA_SKILL_CONTEXT=semantic SKILLSPECTOR_EXA_INSTRUCTION_FLOW=on` | 1 | OK | `pptx__skillharm-fpp-a4db25e26d`: TP, LLM 6/6, 1 EXA-IF1 |
 | P3 | dev | control | 1 | `820f4e4e4e32` | d22fc89c | none | 2,112 (p3-dev) | UNHEALTHY: dropped 10.7%, ERROR 8.7% (184) | TP 304 / FP 191; used (P3-R12) |
 | P3 | dev | A1 ctx=ssd | 1 | `64f64351fcc3` | d22fc89c | `SKILLSPECTOR_EXA_SKILL_CONTEXT=ssd` | 2,112 (p3-dev) | UNHEALTHY: dropped 7.9%, ERROR 2.9% (62) | TP 342 / FP 208; used (P3-R12) |
 | P3 | dev | A2 ctx=semantic | 1 | `397dcabd6f82` | d22fc89c | `SKILLSPECTOR_EXA_SKILL_CONTEXT=semantic` | 2,112 (p3-dev) | UNHEALTHY: dropped 9.3%, ERROR 1.3% (28) | TP 367 / FP 224; used (P3-R12) |
@@ -216,7 +218,8 @@ They were not caused by any flag. Control r1 also had 184 ERROR outcomes, and it
 | B1 if=on | 4 | 471.2 | 237.8 | 0.437 | 0.665 | 0.262 | 0.551 | 0.271 | 27.8 (1.03×) | 149.2 | 5.09 | 154.75 (+22.0) |
 | B3 if=on, rev | 2 | 484.5 | 237.0 | 0.449 | 0.672 | 0.287 | 0.561 | 0.287 | 31.2 (1.16×) | 137.0 | 5.09 | 164.0 (+31.25) |
 
-Columns are means over the runs. Scan times are pooled over all scans of the arm (`classifications.run_time`). The
+Columns are means over the runs; recall and precision here are per-run means over all scans (an ERROR scan counts as
+not predicted), so they differ in the third decimal from the pooled `arms` values the report uses. Scan times are pooled over all scans of the arm (`classifications.run_time`). The
 recall slices use `_boundary_features.jsonl` (`boundary_cluster`) and `_boundary_labels.jsonl` (`cross_file`).
 
 `uv run arms` against the four controls (N_TP = 98, N_FP = 30):
@@ -228,8 +231,8 @@ recall slices use `_boundary_features.jsonl` (`boundary_cluster`) and `_boundary
 | B1 | +99.5 | +30.2 | ΔTP < 196; ΔFP > max(30, 12.4) | pass (≤1.40×) | pass | **REJECT** |
 | B3 | +112.8 | +29.5 | ΔTP < 196; r2 unhealthy | pass (≤1.40×) | **fail** (+31.25) | **REJECT** |
 
-- **Sensitivity check (not the verdict).** Without control r1 (the 184-ERROR run), N_TP = 15 and N_FP = 14.
-  - B1 is then +77 TP / +25 FP, and B3 +90 / +24. Both fail ΔFP ≤ max(14, ΔTP/8), at about 3–4 extra TPs per extra
+- **Sensitivity check (not the verdict).** Without control r1 (the 184-ERROR run), N_TP = 15 and N_FP = 19 (controls r2, r1b, r2b).
+  - B1 is then +77 TP / +25 FP, and B3 +90 / +24. Both fail ΔFP ≤ max(19, ΔTP/8), at about 3–4 extra TPs per extra
     FP against the required 8.
   - A1 and A2 are still about +20 TP or less.
   - The verdicts do not depend on the outlier.
@@ -244,27 +247,33 @@ recall slices use `_boundary_features.jsonl` (`boundary_cluster`) and `_boundary
   - FN-c: instructions inside a PDF (needs P2's DOC_TEXT; not addressed).
   - Result: B3 added TP (+13 over B1) but did not reduce FP. FP-a/b/c were not the dominant FP source.
 - **Structural limit of B1/B3.** One HIGH `EXA-IF1` at confidence c adds 25·c risk points, and the threshold is 50.
-  In B1 r2, 74 malicious units that are FN in both B1 replicates carry a HIGH IF1 finding. Severity is fixed at HIGH
+  458 malicious units are FN in all four B1 replicates; 97 of them carry a HIGH IF1 finding in at least one replicate. Severity is fixed at HIGH
   or MEDIUM by the plan, so no prompt revision can convert these.
 
 ### Decision (Task 5)
 
 - **P3: REJECTED.** No dev arm was PROMISING, so no combined arm and no final full runs were made (as P1-R8). Flags
   ship with their defaults off: `SKILLSPECTOR_EXA_SKILL_CONTEXT` (`ssd` | `semantic`) and
-  `SKILLSPECTOR_EXA_INSTRUCTION_FLOW` (`on`). The IF1 prompt in the tree is the B3 revision (`0c580f30`).
+  `SKILLSPECTOR_EXA_INSTRUCTION_FLOW` (`on`). The IF1 prompt in the tree is the measured B1 text, restored after the final review (P3-R18).
 - **Overview:** `results/recall-p3-report.md`.
 - **Verdict robustness:** the verdict holds with or without the 184-ERROR control r1. B1 and B3 fail the 8:1 FP rule
   even with the tight floors that result without it.
-- **A human can overrule:** B1 raises dev precision (0.642 → 0.665) while failing 8:1. The spec's full-run acceptance
+- **A human can overrule:** B1 raises dev precision (pooled `arms` values 0.642 → 0.665) while failing 8:1. The spec's full-run acceptance
   test is the arbiter: one full control plus one full `INSTRUCTION_FLOW=on` run, same day, healthy.
 
 ### Handoffs to P4+
 
-- **Scoring cap on IF1.** One HIGH IF1 contributes at most 25 risk points, and the threshold is 50. In B1, 74
-  malicious units that stay FN in both replicates already carry a HIGH IF1. A scoring path (gate inclusion, B2-style)
+- **Scoring cap on IF1.** One HIGH IF1 contributes at most 25 risk points, and the threshold is 50. Of the 458 malicious units
+  that are FN in all four B1 replicates, 97 carry a HIGH IF1. A scoring path (gate inclusion, B2-style)
   is where IF1's recall lies, not the prompt.
 - **IF1 FP sources:** the B3 classes FP-a/b/c did not move FP. The dominant FP source is not yet characterised.
 - **Endpoint health:** dev LLM drop rates sat at 5.0–5.8% on every replacement run (P1: 4.8–6.1%). The 5% threshold
   now rejects most runs on a normal day, so the spec's health threshold or worker count deserves a decision.
 - **Watchdog:** the scratchpad `run-arm.sh` watchdog must watch log growth, not a DB count (the DB is locked during a
   run; P3-R17). The harness hang at the last unit (P2 control r2, P3 B3 r2) is still undiagnosed.
+- **IF1 prompt vocabulary:** in this corpus, 222 malicious vs 8 benign units have a component path containing
+  "preflight" or "baseline" (one generator's file naming), so prompt wording built from those words would key on the
+  generator, not the error class. B3 used them; the tree's prompt was reverted to B1 (P3-R18).
+- **Context header placement:** the header (frontmatter name/description and up to 8 SKILL.md lines, all
+  attacker-controlled) is prepended above the analyzer instructions, unfenced. If the flag is revived, move it below
+  the instructions or fence it.

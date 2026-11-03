@@ -42,12 +42,13 @@ made only for PROMISING candidates.
    - A1: +23 TP / +9 FP.
    - A2: +17 TP / +22 FP.
    - B1: +99.5 TP / +30.2 FP. Fails both the noise floor and the 8:1 FP rule.
-   - B3: +112.8 TP / +29.5 FP. Same failures, and it also fails the multi-doc FP guard (+31.25 > 30).
+   - B3: +112.8 TP / +29.5 FP. Fails the noise floor (ΔTP < 196), its r2 is unhealthy, and it fails the multi-doc
+     FP guard (+31.25 > 30). It passes the 8:1 rule at N_FP = 30 (+29.5 ≤ 30).
 6. **Caveats:**
    - **Every run but two failed `health`.** 16 of 18 dev runs dropped 5.0–10.7% of scans' LLM calls. The drops are
      scattered: 459 units dropped in only 1 of 16 runs. That points to the endpoint, not a flag.
    - **The noise floor comes from one bad control.** Control r1 had 184 ERROR outcomes, and N_TP = 98 is set by that
-     run alone. Under the pre-registered rule (P3-R12) every replicate was used. Without r1, N_TP = 15 and N_FP = 14;
+     run alone. Under the pre-registered rule (P3-R12) every replicate was used. Without r1, N_TP = 15 and N_FP = 19;
      B1 (+77/+25) and B3 (+90/+24) are then still REJECT, on FP cost alone (about 3–4 TPs per FP, against 8). The
      verdict does not depend on the outlier.
    - **The 8:1 rule versus precision.** The dev set is FP-heavy: 208 of its 1,034 benign units were FPs at baseline-v2.
@@ -57,7 +58,7 @@ made only for PROMISING candidates.
      stay within the −0.005 bar. A human can overrule with the spec's full-run test: one full control plus one full B1
      run, same day.
    - **IF1 is capped by the scoring.** One HIGH `EXA-IF1` at confidence c adds 25·c points, and the malicious
-     threshold is 50. In B1 r2, 74 malicious units that are FN in both B1 replicates carry a HIGH IF1 finding. Most of
+     threshold is 50. 458 malicious units are FN in all four B1 replicates; 97 of them carry a HIGH IF1 finding in at least one replicate. Most of
      the remaining recall headroom therefore needs a scoring path (for example the B2 idea: IF1 in P1's semantic gate),
      not prompt work. B2 was not run, because P1's gate was rejected.
 
@@ -214,8 +215,10 @@ VERDICT: REJECT
 - **P3: REJECTED.** No candidate was PROMISING, so there was no combined arm, no full runs and no default flip, as in
   P1-R8. Code ships with defaults off:
   - `SKILLSPECTOR_EXA_SKILL_CONTEXT` (unset = off; values `ssd`, `semantic`): `_skill_refs.py`, `_context_patches.py`.
-  - `SKILLSPECTOR_EXA_INSTRUCTION_FLOW` (unset = off; `on`): `_instruction_flow.py`, with the B3 prompt (`0c580f30`).
-    B3 is the prompt in the tree, but it was not better than B1 on FP.
+  - `SKILLSPECTOR_EXA_INSTRUCTION_FLOW` (unset = off; `on`): `_instruction_flow.py`, with the measured B1 prompt
+    restored after the final review (P3-R18): B3 was not better than B1 on FP, and its added wording names words that
+    in this corpus are mostly file-naming habits of one attack generator (222 malicious vs 8 benign units have a
+    component path containing them).
 - **Where the signal is:** B1/B3 is the largest recall gain any program candidate has shown on dev: +8.5 to +9.7
   recall points, C02 +10 to +12 points, SkillHarm attributed +0.10 to +0.12. Its cost is FPs at about 3–4:1. The A
   arms (context header) are within noise.
