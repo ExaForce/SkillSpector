@@ -24,12 +24,19 @@ def _matcher(token: str) -> re.Pattern[str]:
     return re.compile(rf"(?<!\w){re.escape(token)}(?!\w)")
 
 
+def _path_matcher(path: str) -> re.Pattern[str]:
+    # Not preceded by a word char or "/" (so "references/README.md" is not "README.md"),
+    # except for a leading "./" which still names the same root-relative path.
+    return re.compile(rf"(?:(?<![\w/])|(?<=(?<![\w./])\./)){re.escape(path)}(?!\w)")
+
+
 def referenced_files(skill_md: str, components: list[str]) -> dict[str, list[tuple[int, str]]]:
     """Map each component SKILL.md mentions to its referencing ``(line_no, line)`` pairs.
 
     A component is referenced when its relative path, or its basename when that
     basename is unique among ``components``, occurs in SKILL.md with no word
-    character immediately before or after (case-sensitive). SKILL.md itself is
+    character immediately before or after (case-sensitive). A path must also not
+    be preceded by ``/`` (a leading ``./`` is fine); basenames keep the word rule. SKILL.md itself is
     never a referenced file. Order: first referencing line, ties by path.
     """
     basename_counts: dict[str, int] = {}
@@ -43,7 +50,7 @@ def referenced_files(skill_md: str, components: list[str]) -> dict[str, list[tup
         if comp in _SKILL_MD_NAMES:
             continue
         base = comp.rsplit("/", 1)[-1]
-        pats = [_matcher(comp)]
+        pats = [_path_matcher(comp)]
         if base != comp and basename_counts[base] == 1:
             pats.append(_matcher(base))
         hits = [(i, line) for i, line in enumerate(lines, 1) if any(p.search(line) for p in pats)]

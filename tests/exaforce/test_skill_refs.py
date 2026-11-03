@@ -115,3 +115,15 @@ def test_bundle_line_mapping():
     }  # fmt: skip
     for line, want in expected.items():
         assert map_line(bundle, line) == want, line
+
+
+def test_parent_directory_prefix_not_matched():
+    comps = ["README.md", "references/README.md"]
+    assert list(referenced_files("See references/README.md", comps)) == ["references/README.md"]
+    assert list(referenced_files("See x/docs/a.md", ["docs/a.md", "y/a.md"])) == []
+
+
+def test_dot_slash_prefix_matches_root():
+    comps = ["README.md", "references/README.md"]
+    assert list(referenced_files("See ./README.md", comps)) == ["README.md"]
+    assert list(referenced_files("See ../README.md", comps)) == []
