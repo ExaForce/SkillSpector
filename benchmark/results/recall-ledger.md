@@ -246,3 +246,25 @@ recall slices use `_boundary_features.jsonl` (`boundary_cluster`) and `_boundary
 - **Structural limit of B1/B3.** One HIGH `EXA-IF1` at confidence c adds 25·c risk points, and the threshold is 50.
   In B1 r2, 74 malicious units that are FN in both B1 replicates carry a HIGH IF1 finding. Severity is fixed at HIGH
   or MEDIUM by the plan, so no prompt revision can convert these.
+
+### Decision (Task 5)
+
+- **P3: REJECTED.** No dev arm was PROMISING, so no combined arm and no final full runs were made (as P1-R8). Flags
+  ship with their defaults off: `SKILLSPECTOR_EXA_SKILL_CONTEXT` (`ssd` | `semantic`) and
+  `SKILLSPECTOR_EXA_INSTRUCTION_FLOW` (`on`). The IF1 prompt in the tree is the B3 revision (`0c580f30`).
+- **Overview:** `results/recall-p3-report.md`.
+- **Verdict robustness:** the verdict holds with or without the 184-ERROR control r1. B1 and B3 fail the 8:1 FP rule
+  even with the tight floors that result without it.
+- **A human can overrule:** B1 raises dev precision (0.642 → 0.665) while failing 8:1. The spec's full-run acceptance
+  test is the arbiter: one full control plus one full `INSTRUCTION_FLOW=on` run, same day, healthy.
+
+### Handoffs to P4+
+
+- **Scoring cap on IF1.** One HIGH IF1 contributes at most 25 risk points, and the threshold is 50. In B1, 74
+  malicious units that stay FN in both replicates already carry a HIGH IF1. A scoring path (gate inclusion, B2-style)
+  is where IF1's recall lies, not the prompt.
+- **IF1 FP sources:** the B3 classes FP-a/b/c did not move FP. The dominant FP source is not yet characterised.
+- **Endpoint health:** dev LLM drop rates sat at 5.0–5.8% on every replacement run (P1: 4.8–6.1%). The 5% threshold
+  now rejects most runs on a normal day, so the spec's health threshold or worker count deserves a decision.
+- **Watchdog:** the scratchpad `run-arm.sh` watchdog must watch log growth, not a DB count (the DB is locked during a
+  run; P3-R17). The harness hang at the last unit (P2 control r2, P3 B3 r2) is still undiagnosed.
