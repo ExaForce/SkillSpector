@@ -129,6 +129,13 @@ Let `ΔTP` and `ΔFP` be the treatment mean minus the control mean over replicat
 
 Otherwise the verdict is `REJECT`. `uv run arms` computes this.
 
+**Health threshold (amended 2026-11-04, user decision, before any P5 run).** From P5 onward a run (or a pooled union
+replicate) passes the dropped-call check of `health` when at most **10%** of its scans dropped an LLM call (was 5%;
+`benchmark/benchmark/health.py` `MAX_DROPPED_FRACTION`). It applies to control and treatment alike, and to the full
+acceptance runs. Reason: on 2026-11-04 every P4 dev run dropped 6.6–9.4% (controls included), so the 5% clause made
+every candidate unpromotable regardless of its effect. P0–P4 verdicts were made at 5% and are not re-judged; re-running
+`arms` on their runs now reports them against 10%.
+
 **Dev verdict for an FP-reducing candidate:** `PROMISING` when all three hold:
 - `−ΔFP ≥ 2·N_FP`;
 - `−ΔTP ≤ (−ΔFP) / 2`;

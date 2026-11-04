@@ -45,6 +45,17 @@ instructions to skip verification. Precision must hold against documented vendor
   - it matches ≤ 0.2% of benign units across all benign corpora (≤ 12 of 6,307);
   - it matches ≥ 15 malicious units that baseline-v2 missed (FN);
   - fewer than half of its malicious FN matches already carry an existing rule at HIGH or above in baseline-v2.
+- **Precision bar amended (2026-11-04, user decision, after the Task 1 offline run).** The run DROPped every rule,
+  three of four on the third bar. That bar assumed a new HIGH finding adds nothing to a FN that already carries one.
+  Upstream scoring is additive across distinct rule ids (HIGH = 25·confidence; malicious iff risk > 50), and the
+  matched FNs sit at risk 21–50, so the assumption is false. Bars 2 and 3 are replaced by the direct measure they
+  stood in for. Implement a candidate iff:
+  - it matches ≤ 12 benign units (bar 1, unchanged);
+  - **replay:** at least 15 of the baseline-v2 FN units it matches would reach risk > 50 if one finding of the rule
+    were added at its severity points × 0.8 (HIGH +20, MEDIUM +8) to the unit's baseline-v2 `risk_score`.
+
+  `rulelab` reports the replay for both FN→TP and TN→FP. This is a post-hoc change, made by the user with the
+  offline results in view. The spec's dev and acceptance rules are unchanged and still decide P5.
 - Plan minimum: +0.5 recall points. Plan guard: FP on benign units containing any `curl|wget|iwr` install line must
   not rise by more than `N_FP`.
 
