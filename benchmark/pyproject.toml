@@ -26,6 +26,7 @@ health = "benchmark.health:main"
 replay = "benchmark.replay:main"
 attribution = "benchmark.attribution:main"
 arms = "benchmark.arms:main"
+screen = "benchmark.screen:main"
 evalset = "benchmark.evalset:main"
 
 [dependency-groups]
