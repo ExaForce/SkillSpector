@@ -175,24 +175,47 @@ Options:
 - `--batch-size` (150), `--seed` (29), `--z` (2.8), `--min-batches` (3): the pre-registered constants; do not tune.
 - `--stall-seconds` (1200): a scan whose log has not grown for this long is killed (whole process group) and resumed
   with `--run-id`, at most twice; then the screen stops with an error naming the run.
-- `--auth-wait-seconds` (0): passed through to the scans.
+- `--auth-wait-seconds` (0): passed through to the scans. At 0 an SSO expiry aborts the scan (and so the screen)
+  instead of waiting for a re-login.
+- Reused control runs that also hold units outside the units file are warned about: the screen proceeds, but `arms`
+  will refuse the printed line because the control and treatment unit sets differ.
 - `--out-dir` (default `results/screens`): the screen writes to `<out-dir>/<label-slug>/`.
 
 Outputs:
 - After each batch, a table of the look: units scanned, units judged, errors excluded, dTP, dFP, `D`, `SE`,
   `D + z·SE`, the boundary, and whether it is FUTILE.
-- Files in the screen dir: `manifest.json` (batches, run ids, looks, warnings, result) and the per-scan logs
-  `bNN-<arm>.log`. A screen refuses to reuse a dir that already has `manifest.json`; pick another `--label` or
-  `--out-dir`. There is no automatic resume.
-- The last line is `SCREEN: FUTILE at batch k (m units)`, where m is the units scanned so far, or
-  `SCREEN: PASSED (n units)`. On PASSED it also prints an `arms:` line with the `--control` and `--treatment` run
-  ids to pass to `arms`: the union of the batch runs is treatment replicate 1. Run one more full replicate of each arm
-  the same day, then `arms` judges.
+- Files in the screen dir: `manifest.json` (batches, run ids, looks, warnings, result), `batch-NN.txt` (each batch's
+  units file), and the per-scan logs `bNN-<arm>.log` (a resumed scan after a stall logs to `bNN-<arm>.retryN.log`). A
+  screen refuses to reuse a dir that already has `manifest.json`; pick another `--label` or `--out-dir`. There is no
+  automatic resume.
+- The last line is `SCREEN: FUTILE at batch k (m units)`, where m is the units scanned so far. On PASSED the last
+  two lines are `SCREEN: PASSED (n units)` and an `arms:` line with the `--control` and `--treatment` run ids to pass
+  to `arms`. The union of the batch runs is treatment replicate 1.
+- Replicates after a PASSED screen:
+  - When control runs are reused, they are the control replicates (×2); only the treatment gets one more full
+    same-day run (screen union + T2).
+  - When control was scanned per batch, its union is control replicate 1; make one more full control run and one more
+    full treatment run the same day.
+  Then `arms` judges.
 - Warnings (not refusals) when the control's date or git sha differs from the treatment's.
 
 `--simulate` judges existing full runs without scanning: pass the treatment runs with `--treatment-runs` and the
 control with `--control-runs`. It writes no files and runs no scans, so it is a safe way to check what the screen would
 have done on past runs.
+
+Notes:
+- The DB must have no other writer during a screen. The scans hold the DuckDB write lock, and a concurrent writer makes
+  a batch scan fail or the screen's read-only open raise.
+- `arms` checks health per member run, so a union replicate is checked on each 150-unit batch run separately. Two
+  ERROR units in one batch (1.33%) can fail the union replicate, while the same two errors in a full run would pass.
+  ERROR units can be re-scanned with `uv run benchmark … --units-file <batch file> --run-id <batch run>`. Dropped-call
+  scans cannot be repaired that way.
+
+If a screen dies (SSO expiry, a third stall, a DB lock conflict, a closed terminal), there is no automatic resume. The
+manifest holds each batch's run ids (the failing scan's id is recorded with `"incomplete": "<arm>"` when its log named
+one). Finish a batch scan with `uv run benchmark … --units-file <screen dir>/batch-NN.txt --run-id <id>` (same env as the
+screen's `--treatment-env`/`--control-env`), then either judge what exists with `--simulate`, or start a new screen
+under a new `--label`.
 
 ## Comparing two runs (PR-ready report)
 

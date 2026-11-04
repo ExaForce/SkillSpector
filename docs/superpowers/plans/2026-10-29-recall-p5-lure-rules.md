@@ -148,6 +148,8 @@ If no candidate is `IMPLEMENT`, skip to Task 4 and write a REJECTED overview fro
     --units-file results/evalsets/p5-dev.txt --ref-run $BV2 --label p5-L \
     --control-runs <c1>,<c2> --treatment-env SKILLSPECTOR_EXA_LURE_RULES=on
   ```
+  The reused control runs are the control replicates (×2); a PASSED screen's treatment union is replicate 1, and only
+  the treatment gets one more full same-day run, then `arms`.
 - [ ] **Step 3:** For each arm, record into the ledger:
   - ΔTP;
   - ΔTP on annotated `CORRECT` units against `intent`-tier units, kept separate;

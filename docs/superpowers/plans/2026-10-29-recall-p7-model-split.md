@@ -81,7 +81,8 @@ and the fork patch framework.
   rule_id check (Review Focus 2).
   Run each candidate through `uv run screen` first (`--kind recall`, `--control-runs <the day's control runs>`, the
   target slot env var(s) via `--treatment-env`); a FUTILE screen is that candidate's dev verdict, REJECT (spec,
-  "Sequential futility screen"). A PASSED screen is followed by one more full replicate, then `arms`.
+  "Sequential futility screen"). A PASSED screen is followed by one more full treatment
+  run (the reused control runs are the control replicates, ×2), then `arms`.
 - [ ] **Step 3:** Choose the best PROMISING candidate that passes the guards. Commit the evalsets and the ledger with
   the message `docs(benchmark): P7 dev arms`.
 

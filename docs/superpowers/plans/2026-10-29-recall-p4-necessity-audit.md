@@ -168,6 +168,8 @@ purpose-fit payloads, not "operational-step framing".
     --units-file results/evalsets/p4-dev.txt --ref-run $BV2 --label p4-B \
     --control-runs <c1>,<c2> --treatment-env SKILLSPECTOR_EXA_NECESSITY=on
   ```
+  The reused control runs are the control replicates (×2); a PASSED screen's treatment union is replicate 1, and only
+  the treatment gets one more full same-day run, then `arms`.
 - [ ] **Step 3:** For each arm, record into the ledger:
   - ΔTP and ΔFP overall;
   - ΔTP on Content Manipulation units;
