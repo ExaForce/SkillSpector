@@ -531,3 +531,18 @@ The `arms` verdict is PROMISING. Under Step 3 ("choose the best PROMISING arm wh
 as written fails at +4.5 against N_FP = 2, so no arm qualifies. The per-unit attribution shows the failure measures LLM
 drift on 46+ flipping units, not the rule, which touches 2 guard units and at most 0.5 FP. Overriding a
 pre-registered guard after seeing results is the user's call, as with bar 3 (P5-R16). Task 4 is held for that decision.
+
+**Final (user decision, 2026-11-04): REJECTED.** The guard is applied as pre-registered, and no re-registration is made. No
+final full runs. `SKILLSPECTOR_EXA_LURE_RULES` stays off. The expected full-set gain from the rules (about 28 TP, roughly +0.45 recall points) is
+also under the spec's +0.5 minimum, so Task 4 would have been decided by noise. Overview:
+`results/recall-p5-report.md`.
+
+### Handoffs to P6+
+
+- **Near miss:** about +28 TP at ≤ 0.5 FP on dev, mostly STB dropper cells (+0.201 recall) and native-wild droppers.
+  Re-measure under any scoring-path plan. Code: `553b7d0d..7d196c53`.
+- **`rulelab` replay overestimates about 2×.** Matched FNs that stay FN gain a median of about 11 risk points from a
+  HIGH finding at confidence ≥ 0.9, not 20. Locate the loss before P6 relies on replay.
+- **Guard noise floor:** the 246-unit guard flips 46 units control-vs-control. Pre-register future guards as attributable
+  (FPs carrying the candidate's own finding) or against the guard's own control spread.
+- **Offline/live match gap:** 3 of 5 offline benign `EXA-LU4` matches produced no live finding.
