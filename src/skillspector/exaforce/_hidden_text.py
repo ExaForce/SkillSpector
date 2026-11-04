@@ -48,8 +48,10 @@ ANALYZER_ID = "exaforce_hidden_text"
 # Every EXA-HT finding context starts with this marker. Upstream static_runner drops a
 # markdown/text finding whose context "looks like an example" (contains "such as",
 # "e.g.", ...); hidden content is never a visible example, so that drop is bypassed
-# for marked contexts (see _code_example_interceptor).
-CONTEXT_MARKER = "[exaforce: hidden text] "
+# for marked contexts (see _code_example_interceptor), which bypasses every context that
+# starts with FORK_CONTEXT_PREFIX so other fork analyzers (e.g. the lure rules) can share it.
+FORK_CONTEXT_PREFIX = "[exaforce: "
+CONTEXT_MARKER = FORK_CONTEXT_PREFIX + "hidden text] "
 
 HT1_MIN_HIDDEN_CHARS = 40
 HT2_MIN_INVISIBLE_CHARS = 3
@@ -348,7 +350,7 @@ def _register_texts() -> None:
 def _code_example_interceptor(original, args: tuple, kwargs: dict) -> object:
     # apply() checked that ``context`` is the first parameter, so no per-call binding.
     context = args[0] if args else kwargs.get("context")
-    if isinstance(context, str) and context.startswith(CONTEXT_MARKER):
+    if isinstance(context, str) and context.startswith(FORK_CONTEXT_PREFIX):
         return False
     return original(*args, **kwargs)
 
