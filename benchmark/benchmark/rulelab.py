@@ -11,12 +11,18 @@ benign/malicious match count over the whole dataset, joined to an existing run's
   binary files (holding a NUL byte) are skipped too. Text is decoded as UTF-8, errors ignored.
 - A rule matches a unit iff ``pattern.search(text)`` succeeds on any of its files.
 
-Pre-registered precision bar (plan ``2026-10-29-recall-p5-lure-rules``; keep in sync, do not
-tune here). A rule is ``IMPLEMENT`` iff all three hold, else ``DROP``:
+Precision bar (plan ``2026-10-29-recall-p5-lure-rules``, "Precision bar amended", user decision
+2026-11-04; keep in sync, do not tune here). Each rule is judged alone; it is ``IMPLEMENT`` iff
+both hold, else ``DROP``:
 
 1. benign units matched <= floor(0.2% of the run's benign units) (12 of 6,315 at baseline-v2);
-2. malicious units matched that the run missed (FN) >= 15;
-3. fewer than half of those FN matches already carry an issue at HIGH or CRITICAL in the run.
+2. replay: at least 15 of the run's FN units it matches would reach risk > 50 if one finding of
+   the rule were added to the unit's ``risk_score`` in the run, at its severity's points (the
+   scanner's ``_SEVERITY_POINTS``: HIGH 25, MEDIUM 10) x 0.8 (HIGH +20, MEDIUM +8).
+
+The same replay is reported for benign TN units (TN -> FP). FN matches that already carry a
+HIGH/CRITICAL issue are reported as information only (the original third bar, replaced).
+The rule severities come from the patterns module's ``SEVERITY`` dict.
 
 The CLI opens the DB read-only.
 """
@@ -32,14 +38,17 @@ from dataclasses import dataclass, field
 
 import click
 from skillspector.nodes.analyzers.static_runner import MAX_FILE_CHARS
+from skillspector.nodes.report import _SEVERITY_POINTS
 
 from .dataset_handler.malskillbench import MalSkillBenchHandler
 from .models import Unit
 from .report.query import one, rows
 
 BENIGN_PER_MILLE = 2  # bar 1: at most 0.2% of benign units
-MIN_FN = 15  # bar 2
-HIGH_SEVERITIES = ("HIGH", "CRITICAL")  # bar 3: an "existing HIGH+ rule"
+MIN_FLIPS = 15  # bar 2: replay FN -> TP flips
+RISK_THRESHOLD = 50  # the scanner predicts malicious iff risk_score > 50
+REPLAY_CONFIDENCE = 0.8  # one added finding scores its severity points x 0.8
+HIGH_SEVERITIES = ("HIGH", "CRITICAL")  # information: FN with an "existing HIGH+ rule"
 EXCERPT_CHARS = 160
 
 
@@ -120,8 +129,10 @@ class RuleStats:
     benign: list[tuple[str, str, str]]  # (unit_path, corpus, outcome), sorted
     tp: int
     fn: int
-    fn_high: int  # FN matches that already carry a HIGH+ issue
+    fn_high: int  # FN matches that already carry a HIGH+ issue (information)
     other: int  # malicious matches with another outcome (e.g. ERROR)
+    fn_flips: int = 0  # replay: FN matches that would cross risk > 50 (FN -> TP)
+    tn_flips: int = 0  # replay: benign TN matches that would cross risk > 50 (TN -> FP)
     benign_by_corpus: dict[str, int] = field(default_factory=dict)
     malicious_by_corpus: dict[str, int] = field(default_factory=dict)
     verdict: str = ""
@@ -132,23 +143,39 @@ def benign_max(n_benign: int) -> int:
     return n_benign * BENIGN_PER_MILLE // 1000
 
 
+def replay_points(severity: str) -> float:
+    """Risk points one added finding of ``severity`` contributes in the replay."""
+    return _SEVERITY_POINTS[severity.upper()] * REPLAY_CONFIDENCE
+
+
+def flips(risk_score: int | None, severity: str) -> bool:
+    """Would one added finding take a unit at or below the threshold above it?"""
+    if risk_score is None or risk_score > RISK_THRESHOLD:
+        return False
+    return risk_score + replay_points(severity) > RISK_THRESHOLD
+
+
 def verdict(s: RuleStats, n_benign: int) -> tuple[str, list[str]]:
-    """Apply the pre-registered three-part bar; return the verdict and each failed bar."""
+    """Apply the (amended) two-part bar; return the verdict and each failed bar."""
     reasons = []
     cap = benign_max(n_benign)
     if len(s.benign) > cap:
         reasons.append(f"benign matched {len(s.benign)} > {cap} (0.2% of {n_benign})")
-    if s.fn < MIN_FN:
-        reasons.append(f"FN matched {s.fn} < {MIN_FN}")
-    if s.fn and 2 * s.fn_high >= s.fn:
-        reasons.append(f"FN with existing HIGH+ {s.fn_high}/{s.fn} is not fewer than half")
+    if s.fn_flips < MIN_FLIPS:
+        reasons.append(f"replay FN->TP {s.fn_flips} < {MIN_FLIPS}")
     return ("DROP" if reasons else "IMPLEMENT"), reasons
 
 
 def rule_stats(
-    rule: str, matched: set[str], meta: dict[str, dict], high: set[str], n_benign: int
+    rule: str,
+    matched: set[str],
+    meta: dict[str, dict],
+    high: set[str],
+    n_benign: int,
+    severity: str,
 ) -> RuleStats:
-    """Score one rule's matched units against the run (``meta``: unit_path -> evaluation row)."""
+    """Score one rule's matched units against the run (``meta``: unit_path -> evaluation row
+    with ``corpus``, ``truth_malicious``, ``outcome`` and ``risk_score``)."""
     benign, mal = [], []
     for u in sorted(matched):
         (mal if meta[u]["truth_malicious"] else benign).append(u)
@@ -160,6 +187,10 @@ def rule_stats(
         fn=len(fn),
         fn_high=sum(u in high for u in fn),
         other=sum(meta[u]["outcome"] not in ("TP", "FN") for u in mal),
+        fn_flips=sum(flips(meta[u]["risk_score"], severity) for u in fn),
+        tn_flips=sum(
+            meta[u]["outcome"] == "TN" and flips(meta[u]["risk_score"], severity) for u in benign
+        ),
         benign_by_corpus=dict(sorted(Counter(meta[u]["corpus"] or "" for u in benign).items())),
         malicious_by_corpus=dict(sorted(Counter(meta[u]["corpus"] or "" for u in mal).items())),
     )
@@ -190,23 +221,29 @@ def render_markdown(
     n_malicious: int,
     stats: list[RuleStats],
     excerpts: dict[tuple[str, str], str],
+    severities: dict[str, str],
 ) -> str:
     out = [
         f"# rulelab: {module} over run {run}",
         "",
         f"Dataset: `{dataset}`. Units: {n_benign} benign, {n_malicious} malicious.",
         "",
-        f"Bar (IMPLEMENT iff all hold): benign matched <= {benign_max(n_benign)} (0.2%); "
-        f"FN matched >= {MIN_FN}; fewer than half of the FN matches already carry a HIGH+ issue.",
+        f"Bar (each rule alone; IMPLEMENT iff both hold): benign matched <= "
+        f"{benign_max(n_benign)} (0.2%); replay FN->TP >= {MIN_FLIPS}. Replay: one finding of the"
+        f" rule added to the unit's risk_score at its severity points x {REPLAY_CONFIDENCE:g}"
+        f" crosses > {RISK_THRESHOLD}. FN with HIGH+ (FN matches already carrying a"
+        " HIGH/CRITICAL issue) is information only.",
         "",
-        "| Rule | Benign | TP | FN | FN with HIGH+ | Other | Benign by corpus | "
-        "Malicious by corpus | Verdict |",
-        "|---|---|---|---|---|---|---|---|---|",
+        "| Rule | Severity | Benign | TP | FN | FN with HIGH+ | Other | Replay FN->TP |"
+        " Replay TN->FP | Benign by corpus | Malicious by corpus | Verdict |",
+        "|---|---|---|---|---|---|---|---|---|---|---|---|",
     ]
     for s in stats:
+        sev = severities[s.rule]
         out.append(
-            f"| {s.rule} | {len(s.benign)} | {s.tp} | {s.fn} | {s.fn_high} ({_pct(s.fn_high, s.fn)})"
-            f" | {s.other} | {_by_corpus(s.benign_by_corpus)} | {_by_corpus(s.malicious_by_corpus)}"
+            f"| {s.rule} | {sev} (+{replay_points(sev):g}) | {len(s.benign)} | {s.tp} | {s.fn}"
+            f" | {s.fn_high} ({_pct(s.fn_high, s.fn)}) | {s.other} | {s.fn_flips} | {s.tn_flips}"
+            f" | {_by_corpus(s.benign_by_corpus)} | {_by_corpus(s.malicious_by_corpus)}"
             f" | {s.verdict} |"
         )
     out += ["", "## Verdicts", ""]
@@ -234,7 +271,8 @@ def render_markdown(
 @click.option(
     "--patterns-module",
     required=True,
-    help="Importable module whose PATTERNS dict maps rule id -> compiled regex.",
+    help="Importable module with PATTERNS (rule id -> compiled regex) and SEVERITY"
+    " (rule id -> HIGH|MEDIUM|...).",
 )
 @click.option(
     "--dataset",
@@ -253,9 +291,14 @@ def main(db_path, run, patterns_module, dataset, output, matched_out):
     """Count each candidate rule's matches over RUN's units and print the precision-bar verdict."""
     import duckdb
 
-    patterns = getattr(importlib.import_module(patterns_module), "PATTERNS", None)
+    module = importlib.import_module(patterns_module)
+    patterns = getattr(module, "PATTERNS", None)
     if not isinstance(patterns, dict) or not patterns:
         raise click.ClickException(f"{patterns_module} has no non-empty PATTERNS dict")
+    severities = getattr(module, "SEVERITY", None) or {}
+    bad = sorted(r for r in patterns if str(severities.get(r, "")).upper() not in _SEVERITY_POINTS)
+    if bad:
+        raise click.ClickException(f"{patterns_module}.SEVERITY lacks a known severity for {bad}")
     con = duckdb.connect(db_path, read_only=True)
     try:
         dataset = dataset or one(con, "SELECT dataset_path FROM runs WHERE run_id = ?", [run]).get(
@@ -267,7 +310,7 @@ def main(db_path, run, patterns_module, dataset, output, matched_out):
             r["unit_path"]: r
             for r in rows(
                 con,
-                "SELECT unit_path, corpus, truth_malicious, outcome FROM evaluation"
+                "SELECT unit_path, corpus, truth_malicious, outcome, risk_score FROM evaluation"
                 " WHERE run_id = ?",
                 [run],
             )
@@ -290,9 +333,18 @@ def main(db_path, run, patterns_module, dataset, output, matched_out):
     except ValueError as e:
         raise click.ClickException(str(e)) from e
     n_benign = sum(not r["truth_malicious"] for r in meta.values())
-    stats = [rule_stats(rule, matches[rule], meta, high, n_benign) for rule in patterns]
+    stats = [
+        rule_stats(rule, matches[rule], meta, high, n_benign, severities[rule]) for rule in patterns
+    ]
     text = render_markdown(
-        run, patterns_module, str(dataset), n_benign, len(meta) - n_benign, stats, excerpts
+        run,
+        patterns_module,
+        str(dataset),
+        n_benign,
+        len(meta) - n_benign,
+        stats,
+        excerpts,
+        severities,
     )
     click.echo(text)
     if output:

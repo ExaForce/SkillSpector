@@ -162,4 +162,12 @@ PATTERN_SOURCES: dict[str, str] = {
     ),
 }
 
+# Rule severities (plan Global Constraints); rulelab's replay scores one finding at these.
+SEVERITY: dict[str, str] = {
+    "EXA-LU1": "HIGH",
+    "EXA-LU2": "HIGH",
+    "EXA-LU3": "MEDIUM",
+    "EXA-LU4": "HIGH",
+}
+
 PATTERNS: dict[str, re.Pattern] = {k: re.compile(v, FLAGS) for k, v in PATTERN_SOURCES.items()}

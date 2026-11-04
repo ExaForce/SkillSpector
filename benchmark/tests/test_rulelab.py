@@ -3,7 +3,9 @@
 
 from __future__ import annotations
 
+import ast
 import json
+import pathlib
 import re
 
 import duckdb
@@ -11,10 +13,10 @@ import pytest
 from click.testing import CliRunner
 from skillspector.nodes.analyzers.static_runner import MAX_FILE_CHARS
 
-from benchmark import rulelab
+from benchmark import lure_candidates, rulelab
 from benchmark.db import _EVAL_VIEW, _SCHEMA
-from benchmark.lure_candidates import PASTE_HOSTS, PATTERN_SOURCES, PATTERNS
-from benchmark.rulelab import RuleStats, main, match_units, verdict
+from benchmark.lure_candidates import PASTE_HOSTS, PATTERN_SOURCES, PATTERNS, SEVERITY
+from benchmark.rulelab import RuleStats, flips, main, match_units, verdict
 
 B_CLEAN = "Skills/benign/b-clean"
 B_HIT = "Skills/benign/b-hit"
@@ -79,35 +81,50 @@ def test_match_units_rejects_unknown_units(dataset):
 # --------------------------------------------------------------------------- #
 # verdict (the pre-registered precision bar)
 # --------------------------------------------------------------------------- #
-def _stats(benign, fn, fn_high):
+def _stats(benign, fn_flips, fn_high=0):
     return RuleStats(
         rule="R",
         benign=[(f"b{i}", "c", "TN") for i in range(benign)],
         tp=0,
-        fn=fn,
+        fn=40,
         fn_high=fn_high,
         other=0,
-        benign_by_corpus={},
-        malicious_by_corpus={},
+        fn_flips=fn_flips,
     )
 
 
-def test_verdict_implement_when_all_three_bars_hold():
-    assert verdict(_stats(12, 15, 7), n_benign=6315) == ("IMPLEMENT", [])
+def test_verdict_implement_when_both_bars_hold():
+    # FN with HIGH+ is information only under the amended bar
+    assert verdict(_stats(12, 15, fn_high=40), n_benign=6315) == ("IMPLEMENT", [])
 
 
 @pytest.mark.parametrize(
-    ("benign", "fn", "fn_high", "why"),
+    ("benign", "fn_flips", "why"),
     [
-        (13, 40, 0, "benign"),  # 13 > floor(0.2% of 6315) = 12
-        (0, 14, 0, "FN"),
-        (0, 30, 15, "HIGH+"),  # exactly half is not "fewer than half"
+        (13, 40, "benign"),  # 13 > floor(0.2% of 6315) = 12
+        (0, 14, "replay FN->TP 14 < 15"),
     ],
 )
-def test_verdict_drop_names_the_failed_bar(benign, fn, fn_high, why):
-    v, reasons = verdict(_stats(benign, fn, fn_high), n_benign=6315)
+def test_verdict_drop_names_the_failed_bar(benign, fn_flips, why):
+    v, reasons = verdict(_stats(benign, fn_flips), n_benign=6315)
     assert v == "DROP"
     assert len(reasons) == 1 and why in reasons[0]
+
+
+@pytest.mark.parametrize(
+    ("risk", "severity", "flipped"),
+    [
+        (31, "HIGH", True),  # 31 + 20 = 51 > 50
+        (30, "HIGH", False),  # 30 + 20 = 50 is not > 50
+        (43, "MEDIUM", True),  # 43 + 8 = 51
+        (42, "MEDIUM", False),  # 42 + 8 = 50
+        (30, "MEDIUM", False),
+        (51, "HIGH", False),  # already above the threshold: nothing to flip
+        (None, "HIGH", False),
+    ],
+)
+def test_replay_flip_threshold(risk, severity, flipped):
+    assert flips(risk, severity) is flipped
 
 
 # --------------------------------------------------------------------------- #
@@ -119,22 +136,22 @@ def _disk_db(tmp_path, dataset):
     con.execute(_SCHEMA)
     con.execute(_EVAL_VIEW)
     con.execute("INSERT INTO runs (run_id, dataset_path) VALUES ('r1', ?)", [str(dataset)])
-    rows = [  # unit, corpus, truth, predicted
-        (B_CLEAN, "benign", False, False),
-        (B_HIT, "benign", False, True),
-        (M_HIT, "malware", True, False),
-        (M_SKIP, "malware", True, True),
-        (CODE, "Python", True, False),
+    rows = [  # unit, corpus, truth, predicted, risk_score
+        (B_CLEAN, "benign", False, False, 0),
+        (B_HIT, "benign", False, False, 35),  # TN; +20 -> 55 would be FP
+        (M_HIT, "malware", True, False, 31),  # FN; +20 -> 51 flips, +8 -> 39 does not
+        (M_SKIP, "malware", True, True, 80),
+        (CODE, "Python", True, False, 30),  # FN; +8 -> 38 does not flip
     ]
-    for unit, corpus, truth, pred in rows:
+    for unit, corpus, truth, pred, risk in rows:
         con.execute(
             "INSERT INTO units (run_id, unit_path, corpus, is_malicious) VALUES ('r1', ?, ?, ?)",
             [unit, corpus, truth],
         )
         con.execute(
-            "INSERT INTO classifications (run_id, unit_path, is_malicious, status)"
-            " VALUES ('r1', ?, ?, 'Done')",
-            [unit, pred],
+            "INSERT INTO classifications (run_id, unit_path, is_malicious, status, risk_score)"
+            " VALUES ('r1', ?, ?, 'Done', ?)",
+            [unit, pred, risk],
         )
     for i, (unit, sev) in enumerate([(M_HIT, "HIGH"), (CODE, "MEDIUM"), (B_HIT, "CRITICAL")]):
         con.execute(
@@ -146,30 +163,52 @@ def _disk_db(tmp_path, dataset):
     return db
 
 
-def test_cli_writes_report_and_matched_units(tmp_path, dataset, monkeypatch):
+FAKE_MODULE = """\
+import re
+PATTERNS = {
+    'R-ALPHA': re.compile('alpha'),
+    'R-BETA': re.compile('beta'),
+    'R-GAMMA': re.compile('gamma'),
+}
+SEVERITY = {'R-ALPHA': 'HIGH', 'R-BETA': 'HIGH', 'R-GAMMA': 'MEDIUM'}
+"""
+
+
+def _invoke(tmp_path, dataset, monkeypatch, module_text, *extra):
     mod = tmp_path / "mods" / "rl_fake_patterns.py"
-    _w(
-        mod,
-        "import re\nPATTERNS = {'R-ALPHA': re.compile('alpha'), 'R-GAMMA': re.compile('gamma')}\n",
-    )
+    _w(mod, module_text)
     monkeypatch.syspath_prepend(str(mod.parent))
-    monkeypatch.setattr(rulelab, "MIN_FN", 1)  # tiny world: let R-GAMMA pass the FN bar
+    monkeypatch.delitem(__import__("sys").modules, "rl_fake_patterns", raising=False)
     db = _disk_db(tmp_path, dataset)
+    return CliRunner().invoke(
+        main, [str(db), "r1", "--patterns-module", "rl_fake_patterns", *extra]
+    )
+
+
+def test_cli_writes_report_replay_and_matched_units(tmp_path, dataset, monkeypatch):
+    monkeypatch.setattr(rulelab, "MIN_FLIPS", 1)  # tiny world: one flip passes the replay bar
     out, matched = tmp_path / "report.md", tmp_path / "matched.txt"
-    res = CliRunner().invoke(
-        main,
-        [str(db), "r1", "--patterns-module", "rl_fake_patterns", "-o", str(out)]
-        + ["--matched-out", str(matched)],
+    res = _invoke(
+        tmp_path, dataset, monkeypatch, FAKE_MODULE, "-o", str(out), "--matched-out", str(matched)
     )
     assert res.exit_code == 0, res.output
     text = out.read_text()
-    # R-ALPHA: 1 benign (> floor(0.2% of 2) = 0) -> DROP; FN m-hit carries a HIGH+ issue.
-    assert "| R-ALPHA | 1 | 0 | 1 | 1 (100%) |" in text
-    # R-GAMMA: FN code unit, only a MEDIUM issue -> IMPLEMENT.
-    assert "| R-GAMMA | 0 | 0 | 1 | 0 (0%) |" in text
-    assert "R-ALPHA: DROP" in text and "R-GAMMA: IMPLEMENT" in text
+    # cols: severity | benign | TP | FN | FN with HIGH+ | other | replay FN->TP | replay TN->FP
+    # R-ALPHA: benign TN b-hit (35 + 20 > 50) and FN m-hit (31 + 20 > 50); 1 benign > cap 0.
+    assert "| R-ALPHA | HIGH (+20) | 1 | 0 | 1 | 1 (100%) | 0 | 1 | 1 |" in text
+    # R-BETA: FN m-hit flips (HIGH+ is information only) -> IMPLEMENT.
+    assert "| R-BETA | HIGH (+20) | 0 | 0 | 1 | 1 (100%) | 0 | 1 | 0 |" in text
+    # R-GAMMA: FN code unit at 30 + 8 = 38 does not flip -> DROP.
+    assert "| R-GAMMA | MEDIUM (+8) | 0 | 0 | 1 | 0 (0%) | 0 | 0 | 0 |" in text
+    assert "- R-ALPHA: DROP" in text and "- R-BETA: IMPLEMENT" in text
+    assert "- R-GAMMA: DROP: replay FN->TP 0 < 1" in text
     assert B_HIT in text  # benign matches are listed for the reader
-    assert matched.read_text() == f"{CODE}\n"
+    assert matched.read_text() == f"{M_HIT}\n"
+
+
+def test_cli_requires_a_severity_per_rule(tmp_path, dataset, monkeypatch):
+    res = _invoke(tmp_path, dataset, monkeypatch, FAKE_MODULE.replace("'R-GAMMA': 'MEDIUM'", ""))
+    assert res.exit_code != 0 and "R-GAMMA" in res.output
 
 
 # --------------------------------------------------------------------------- #
@@ -182,6 +221,19 @@ def _fires(rule, text):
 def test_candidates_are_compiled_from_literal_sources():
     assert sorted(PATTERNS) == ["EXA-LU1", "EXA-LU2", "EXA-LU3", "EXA-LU4"]
     assert all(PATTERNS[k].pattern == PATTERN_SOURCES[k] for k in PATTERNS)
+
+
+def test_pattern_sources_and_severity_are_plain_literals():
+    """The classifier node copies these dicts; ``ast.literal_eval`` must read them as written."""
+    tree = ast.parse(pathlib.Path(lure_candidates.__file__).read_text(encoding="utf-8"))
+    found = {
+        node.target.id: ast.literal_eval(node.value)
+        for node in tree.body
+        if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name)
+        if node.target.id in ("PATTERN_SOURCES", "SEVERITY")
+    }
+    assert found == {"PATTERN_SOURCES": PATTERN_SOURCES, "SEVERITY": SEVERITY}
+    assert sorted(SEVERITY) == sorted(PATTERNS)
 
 
 def test_lu1_paste_alternation_is_exactly_paste_hosts():
