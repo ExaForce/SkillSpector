@@ -125,7 +125,7 @@ Let `ΔTP` and `ΔFP` be the treatment mean minus the control mean over replicat
 **Dev verdict for a recall-raising candidate:** `PROMISING` when all three hold:
 - `ΔTP ≥ 2·N_TP`;
 - `ΔFP ≤ max(N_FP, ΔTP / 8)`, i.e. at least 8 extra TPs per extra FP;
-- both treatment replicates pass `health`.
+- both treatment replicates pass `health` (a union replicate pooled over its member runs, as one run).
 
 Otherwise the verdict is `REJECT`. `uv run arms` computes this.
 
@@ -138,7 +138,7 @@ Otherwise the verdict is `REJECT`. `uv run arms` computes this.
 candidate with the highest `ΔTP − 8·ΔFP` among the PROMISING ones. If none is PROMISING after 5, the plan's verdict is
 REJECTED. Record that and still produce the overview.
 
-### Sequential futility screen (pre-registered 2026-11-04)
+### Sequential futility screen (pre-registered 2026-11-04, amended 2026-11-04)
 
 A candidate is screened with `uv run screen` before its full dev replicates. The screen scans the dev set in stratified
 batches (never repeating a unit), pairs treatment with same-day control on the units judged so far, and stops only to
@@ -149,20 +149,15 @@ reject.
   - seed 29;
   - FP weight 8 (the spec's 8:1 rule);
   - minimum batches before any stop: 3;
-  - z = 2.8 (one-sided per look, about 0.26%; over about 16 looks the false-futility rate stays below 5%);
-  - allowance `16·n/N`, which is the spec's `N_FP ≥ 2` floor (8·2) scaled to the n of N units judged so far.
-- Per-unit paired score:
-  - `d_i = (tp_t − tp_c) − 8·(fp_t − fp_c)`, where `tp`/`fp` are the unit's TP/FP indicators. With several runs on a
-    side, they are means over that side's runs that contain the unit.
-  - A unit whose outcome is ERROR in any run on either side is excluded from `d` and counted separately.
-- Boundary:
-  - `D = Σ d_i` over the n judged units so far.
-  - `SE = sd(d, ddof=1)·sqrt(n)`, or 0 when n < 2.
-  - Stop (FUTILE) iff the batch count is ≥ 3 and `D + 2.8·SE < −16·n/N`.
-  - Never stop for success.
+  - z = 2.8 (one-sided per look, about 0.26%).
+- Per-unit paired differences: `tp`/`fp` are the unit's TP/FP indicators. With several runs on a side, they are means
+  over that side's runs that contain the unit. A unit whose outcome is ERROR in any run on either side is excluded and
+  counted separately.
+- Recall-raising candidates (`--kind recall`, the default) use the v2 rule below.
 - FP-reducing candidates (`--kind fp`, mirroring `arms --kind`). The spec's rule needs `−ΔTP ≤ (−ΔFP)/2`, that is
   `2·ΔTP − ΔFP ≥ 0`.
   - The per-unit score is `d_i = 2·(tp_t − tp_c) − (fp_t − fp_c)`, and the allowance is 0.
+  - `D = Σ d_i` over the n judged units so far; `SE = sd(d, ddof=1)·sqrt(n)`, or 0 when n < 2.
   - Stop iff the batch count is ≥ 3 and `D + 2.8·SE < 0`.
   - The default is `--kind recall`.
 - Stratum key per unit, from a reference run's `evaluation` row: `'benign'` when not malicious, else
@@ -175,28 +170,97 @@ reject.
     same-day run (screen union + T2).
   - When control was scanned per batch, its union is control replicate 1, and one more full control run and one more
     full treatment run are made.
+- A union replicate's health is pooled over its member runs: scans, dropped calls and ERRORs summed, semantic issues
+  counted over all members, the median run_time over the union's scans, and the LLM checks applied if any member used
+  the LLM. It is judged exactly as the one full run it stands in for.
 - Control runs are reused only from the same day, tree and dev set.
 - The screen never accepts.
 
-Validation (2026-11-04, simulate on existing runs):
-- The first replay averaged the two treatment runs on each side. A live screen has one treatment run per unit, so it
-  is weaker than that replay.
-  - P4 A (control 54ce3a6bbe59,01d373aebd37 vs treatment daed644651be,a753a1ba2c6c on p4-dev, two treatment runs
-    averaged): FUTILE at batch 7, 1050 of 2393 units scanned.
-  - P3 B1 (control bfcbcbe585e5,2e6e81859349 vs treatment a9949fa84c95,2a94f96eb7c8 on p3-dev, two averaged), whose
-    full dev verdict was REJECT on FP cost: not stopped. The final look was D + 2.8·SE = +16.00 against a boundary of
-    −15.99, with D = −172.5 and SE = 67.3 at n = 2111.
-  - Control against control (bfcbcbe585e5 vs 2e6e81859349): not stopped, as required.
-- Replays in the live configuration (control = the 2 reused runs, one treatment run):
-  - P4 A stops in 1 of 2: a753a1ba2c6c is FUTILE at batch 7 (1050 units); daed644651be is PASSED, all 16 batches.
-  - P3 B1 passes in both: a9949fa84c95 (final D + 2.8·SE −13.11 vs −15.99) and 2a94f96eb7c8 (+123.70).
-- Limitations, stated as properties of the pre-registered rule:
-  - P3 B1 is not a near miss. Its D = −172.5 is about 11× the allowance. It passes because `SE = sd·√n` has no
-    finite-population correction, so SE keeps growing as n approaches N.
-  - The rule scores only net 8:1-weighted harm. It has no `ΔTP ≥ 2·N_TP` clause, so a null or weak candidate is never
-    stopped by design. It catches grossly net-harmful candidates only; every other reject comes from the standard dev
-    verdict.
-  - The constants are not retuned.
+**Amended 2026-11-04, before any live screen: recall-kind rule v2.** The rule and its acceptance criteria were written
+before any v2 replay was computed. All criteria passed, so v2 replaced v1 for `--kind recall`. v1 (`D + 2.8·SE <
+−16·n/N` on `d = Δtp − 8·Δfp`) tested only net 8:1-weighted harm: it never stopped null or weak candidates, and it had
+no finite-population or replicate-2 modelling, so its SE kept growing as n approached N.
+
+Rule (v2), verbatim from the pre-registration:
+- Inputs at look k (after batch k):
+  - `N`: units in the units file.
+  - `n`: judged units (covered by both sides, with no ERROR on either side).
+  - Per judged unit j:
+    - `dtp_j = tp_T(j) − mean_C tp(j)` and `dfp_j = fp_T(j) − mean_C fp(j)`, where T is the screen's treatment
+      run(s);
+    - `g_j = dtp_j − 8·dfp_j`.
+  - Noise floors, as `arms` computes them:
+    - If the reused control runs are ≥ 2 complete replicates, `N_TP = max(3, range of TP totals)` and
+      `N_FP = max(2, range of FP totals)`.
+    - Otherwise (per-batch control, or 1 control), use the floors `N_TP = 3` and `N_FP = 2`. The floors are the
+      smallest the final verdict can use, so they are conservative for futility.
+- Projection of the final verdict quantities. The final verdict is the mean of 2 treatment replicates minus the
+  control mean, as dev-set totals.
+  - For x in {dtp, dfp, g}:
+    - `F_x = N·mean(x)`;
+    - `SD_x = sd(x)·½·(sqrt(N(N−n)/n) + sqrt(N(N+n)/n))`.
+  - `SD_x` adds the replicate-1 prediction error for the unscanned units and the replicate-2 prediction error,
+    treating them as perfectly correlated. Units are modelled as iid; persistent per-unit effects make this
+    conservative.
+- Stop (FUTILE) iff `k ≥ 3` and either of:
+  - (TP) `F_dtp + z·SD_dtp < 2·N_TP`;
+  - (FP) `F_g + z·SD_g < 0` **and** `F_dfp − z·SD_dfp > N_FP`.
+
+  with `z = 2.8`. It never stops for success. Batching, seed, batch size, min batches and ERROR handling are
+  unchanged.
+
+`uv run screen` takes the replicates' TP/FP totals over the units file (a union replicate sums its members). With
+n < 2 it never stops, and the SDs are n/a.
+
+Acceptance criteria (v2 replaces v1 only if all pass):
+- A1: no stop in any single-treatment-run replay of a historical dev-PROMISING candidate (P1 gate=confirmed, P2 A,
+  P2 B), with PROMISING recomputed by `arms` logic on the same runs.
+- A2: synthetic false futility ≤ 5% for clearly PROMISING effects. A spare same-day control replicate stands in for
+  treatment noise (P3: controls bfcbcbe585e5, 2e6e81859349, spare e89e74415880; P4: controls 54ce3a6bbe59,
+  01d373aebd37, spare 92149d37b0d8), with effects injected on random units, 300 draws per scenario:
+  - S1: +3·N_TP TPs and 0 FP;
+  - S2: +4·N_TP TPs and +(4·N_TP/8 − 1) FPs, PROMISING on both clauses.
+- A3: v2 stops strictly more single-run replays of historical dev-REJECT candidates (P3 A1, P3 A2, P3 B1, P3 B3, P4 A,
+  each replicate) than v1.
+- A4 (informational): stop rates of control against control and of the S0 null (spare control, no injection).
+
+Results (simulate on existing runs, one treatment run per replay; `arms` verdict as dTP, dFP, N_TP, N_FP):
+
+| candidate | arms verdict | treatment run | v1 stop | v2 stop |
+|---|---|---|---|---|
+| P1 gate=confirmed (N=1364) | PROMISING (+32.5, +3.0, 3, 13) | 46bf363f7145 | never | never |
+| P1 gate=confirmed | PROMISING | 4952d46c49a0 | never | never |
+| P2 A doc_text (N=2154) | PROMISING (+37.0, +3.0, 3, 2) | ab0a8478cbe9 | never | never |
+| P2 B doc_text+hidden | PROMISING (+37.0, −13.0, 3, 2) | d05bd241b62a | never | never |
+| P3 A1 ctx=ssd (N=2112) | REJECT (+18.0, +9.5, 15, 14) | a88091f5b7bc | never | never |
+| P3 A1 ctx=ssd | REJECT | df2855f770be | never | never |
+| P3 A2 ctx=semantic | REJECT (+5.5, +23.5, 15, 14) | 40a9a3b9c46c | never | b8 (1128 units) |
+| P3 A2 ctx=semantic | REJECT | 4d56e7b6db30 | b8 (1128 units) | never |
+| P3 B1 if=on | REJECT (+76.0, +31.0, 15, 14) | a9949fa84c95 | never | b13 (1832 units) |
+| P3 B1 if=on | REJECT | 2a94f96eb7c8 | never | never |
+| P3 B3 prompt-rev | REJECT (+90.0, +28.0, 15, 14) | e8688634c909 | b4 (564 units) | b4 (564 units) |
+| P3 B3 prompt-rev | REJECT | 09b9a0110cf8 | never | never |
+| P4 A ssd5=on (N=2393) | REJECT (+29.0, +28.5, 23, 2) | daed644651be | never | never |
+| P4 A ssd5=on | REJECT | a753a1ba2c6c | b7 (1050 units) | b7 (1050 units) |
+| null: P3 spare | REJECT (−0.5, +12.0, 15, 14) | e89e74415880 | never | b14 (1972 units) |
+| null: P4 spare | REJECT (+6.5, +16.0, 23, 2) | 92149d37b0d8 | never | b3 (450 units) |
+| null: P3 control vs control | REJECT (+15.0, +14.0, 3, 2) | bfcbcbe585e5 | never | never |
+
+| base | scenario | N_TP | v1 stop rate | v2 stop rate |
+|---|---|---|---|---|
+| P3 spare e89e74415880 | S1 +3·N_TP TP | 15 | 0/300 | 0/300 |
+| P3 spare e89e74415880 | S2 +4·N_TP TP, +(N_TP/2 − 1) FP | 15 | 0/300 | 0/300 |
+| P4 spare 92149d37b0d8 | S1 +3·N_TP TP | 23 | 0/300 | 0/300 |
+| P4 spare 92149d37b0d8 | S2 +4·N_TP TP, +(N_TP/2 − 1) FP | 23 | 3/300 | 15/300 (5.0%) |
+
+- A1 passes: no PROMISING replay stops.
+- A2 passes: the worst scenario is P4 S2 at 15/300 = 5.0%, at the limit.
+- A3 passes: v2 stops 4 of 10 reject replays, v1 stops 3.
+- A4: v2 stops 2 of 3 null replays (the S0 rows are the two spare-control replays); v1 stops none.
+
+Limitation, from the data: v2 stopped 4 of 10 historical reject replays and 2 of 3 null replays, and no promising
+candidate. Any stop saves at least the second treatment replicate. A reject that v2 misses is still caught by the full
+dev verdict. The constants are not retuned.
 
 **Final acceptance (full run):** `ACCEPTED` when all of these hold:
 - recall gain ≥ the plan's minimum, which defaults to **+0.5 points**;

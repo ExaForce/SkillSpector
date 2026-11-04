@@ -159,6 +159,14 @@ treatment with same-day control on every unit judged so far, and applies the pre
 spec (`docs/superpowers/specs/2026-10-29-recall-improvement-program.md`, "Sequential futility screen"). It stops only to
 reject; it never accepts. A candidate that passes goes on to the standard dev verdict with `arms`.
 
+The recall-kind rule (v2) projects the final dev verdict from the units judged so far. Per judged unit it takes
+`dtp`, `dfp` and `g = dtp − 8·dfp` (treatment minus control mean), projects each dev-set total as `F = N·mean` with
+`SD = sd·½·(sqrt(N(N−n)/n) + sqrt(N(N+n)/n))`, and after at least 3 batches stops when either the TP clause
+`F_dtp + z·SD_dtp < 2·N_TP` holds, or both FP conditions `F_g + z·SD_g < 0` and `F_dfp − z·SD_dfp > N_FP` hold.
+`N_TP`/`N_FP` are `arms`' noise floors over the reused control runs when `--control-runs` names at least 2 replicates
+(TP/FP totals over the units file); otherwise (per-batch control, or 1 control replicate) the floors 3 and 2. The
+`--kind fp` rule is unchanged: `D + z·SE < 0` on `d = 2·Δtp − Δfp`.
+
 ```bash
 uv run screen /path/to/MalSkillBench/Dataset --db results/recall.duckdb \
   --units-file results/evalsets/p4-dev.txt --ref-run <baseline run> --label p4-B \
@@ -182,11 +190,16 @@ Options:
 - `--out-dir` (default `results/screens`): the screen writes to `<out-dir>/<label-slug>/`.
 
 Outputs:
-- After each batch, a table of the look: units scanned, units judged, errors excluded, dTP, dFP, `D`, `SE`,
-  `D + z·SE`, the boundary, and whether it is FUTILE.
-- Files in the screen dir: `manifest.json` (batches, run ids, looks, warnings, result), `batch-NN.txt` (each batch's
-  units file), and the per-scan logs `bNN-<arm>.log` (a resumed scan after a stall logs to `bNN-<arm>.retryN.log`). A
-  screen refuses to reuse a dir that already has `manifest.json`; pick another `--label` or `--out-dir`. There is no
+- A header line with the units, batches and constants; for `--kind recall` also `N_TP`, `N_FP` and their source
+  (`range over k reused control replicates`, `floors: 1 control replicate` or `floors: per-batch control`).
+- After each batch, a table of the look. Recall kind: units scanned, units judged, errors excluded, dTP, dFP,
+  `F_dtp ± SD_dtp`, `F_dtp + z·SD_dtp` against `2·N_TP`, `F_g + z·SD_g` against 0, `F_dfp − z·SD_dfp` against
+  `N_FP`, and the stop (`FUTILE (TP)`, `FUTILE (FP)`, `FUTILE (TP+FP)` or `no`). SDs and bounds are `n/a` below 2
+  judged units. FP kind: units scanned, judged, errors, dTP, dFP, `D`, `SE`, `D + z·SE`, the boundary, and FUTILE or
+  no.
+- Files in the screen dir: `manifest.json` (batches, run ids, `n_tp`/`n_fp` and their source, every look's fields,
+  warnings, result), `batch-NN.txt` (each batch's units file), and the per-scan logs `bNN-<arm>.log` (a resumed scan
+  after a stall logs to `bNN-<arm>.retryN.log`). A screen refuses to reuse a dir that already has `manifest.json`; pick another `--label` or `--out-dir`. There is no
   automatic resume.
 - The last line is `SCREEN: FUTILE at batch k (m units)`, where m is the units scanned so far. On PASSED the last
   two lines are `SCREEN: PASSED (n units)` and an `arms:` line with the `--control` and `--treatment` run ids to pass
@@ -206,10 +219,11 @@ have done on past runs.
 Notes:
 - The DB must have no other writer during a screen. The scans hold the DuckDB write lock, and a concurrent writer makes
   a batch scan fail or the screen's read-only open raise.
-- `arms` checks health per member run, so a union replicate is checked on each 150-unit batch run separately. Two
-  ERROR units in one batch (1.33%) can fail the union replicate, while the same two errors in a full run would pass.
-  ERROR units can be re-scanned with `uv run benchmark … --units-file <batch file> --run-id <batch run>`. Dropped-call
-  scans cannot be repaired that way.
+- `arms` checks a union replicate's health pooled over its member runs, as the one full run it stands in for: scans,
+  dropped calls and ERRORs summed, semantic issues counted over all members, the median run_time over the union, and
+  the LLM checks applied if any member used the LLM. Two ERROR units in one 150-unit batch fail only if the union as a
+  whole exceeds 1%. ERROR units can be re-scanned with `uv run benchmark … --units-file <batch file> --run-id <batch
+  run>`. Dropped-call scans cannot be repaired that way.
 
 If a screen dies (SSO expiry, a third stall, a DB lock conflict, a closed terminal), there is no automatic resume. The
 manifest holds each batch's run ids (the failing scan's id is recorded with `"incomplete": "<arm>"` when its log named
