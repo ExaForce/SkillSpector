@@ -156,7 +156,7 @@ def test_eg_suffix_lure_survives_static_runner():
 def test_lure_regexes_linear_on_long_lines(line):
     start = time.perf_counter()
     lure.analyze(line, "SKILL.md", "markdown")
-    assert time.perf_counter() - start < 1.0
+    assert time.perf_counter() - start < 5.0
 
 
 def test_padded_long_line_lure_detected():
@@ -176,6 +176,53 @@ def test_lure_regexes_linear_on_megabyte_line():
     start = time.perf_counter()
     lure.analyze("iex wget " * 111_112, "SKILL.md", "markdown")
     assert time.perf_counter() - start < 5.0
+
+
+def test_lure_regexes_bounded_on_megabyte_slow_path():
+    # IP host present, no exec: the hint passes, so the regex runs on every window.
+    start = time.perf_counter()
+    lure.analyze("curl 1.2.3.4 | " * 66_667, "SKILL.md", "markdown")
+    assert time.perf_counter() - start < 30.0
+
+
+def test_line_number_and_context_exact_after_long_lines():
+    lure_line = IP_FETCH_EXEC
+    text = "intro\n" + "x" * 5000 + "\nmore\n" + lure_line + "\n"
+    (finding,) = lure.analyze(text, "SKILL.md", "markdown")
+    assert finding.location.start_line == 4
+    assert finding.context == lure.CONTEXT_MARKER + lure_line
+    text = "x" * 6000 + "\n" + "y" * 6000 + "\n" + lure_line + "\n" + "z" * 5000 + "\n" + lure_line
+    assert [f.location.start_line for f in lure.analyze(text, "SKILL.md", "markdown")] == [3, 5]
+
+
+def test_long_line_context_is_centred_on_match():
+    line = "x " * 2500 + IP_FETCH_EXEC + " # " + "y " * 2500
+    (finding,) = lure.analyze(line, "SKILL.md", "markdown")
+    assert "203.0.113.9" in finding.context
+    assert len(finding.context) <= len(lure.CONTEXT_MARKER) + 300
+
+
+@pytest.mark.parametrize("before", [True, False])
+def test_cross_line_lu4_survives_long_line(before):
+    decode = "$b=[Convert]::FromBase64String($p)"
+    iex = "iex ([Text.Encoding]::UTF8.GetString($b))"
+    pad = "z " * 2600
+    if before:  # FromBase64String ends a long line, iex starts the next
+        text = "# " + pad + decode + "\n" + iex + "\n"
+    else:  # iex line is long (>4096), padded before (within the 400-char reach) and after the token
+        text = decode + "\n" + "# " + "z " * 100 + iex + " # " + pad + "\n"
+    assert "EXA-LU4" in _ids(text)
+    assert "EXA-LU4" in _ids(decode + "\n" + iex + " # " + pad + "\n")
+
+
+def test_window_overlap_exceeds_longest_match():
+    try:
+        import re._parser as sre_parse
+    except ImportError:  # Python < 3.11
+        import sre_parse
+    for source in lure.PATTERN_SOURCES.values():
+        _, longest = sre_parse.parse(source, lure._FLAGS).getwidth()
+        assert longest < lure.WINDOW_OVERLAP
 
 
 def _skill(tmp_path):

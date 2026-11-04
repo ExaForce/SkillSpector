@@ -78,11 +78,11 @@ PATTERN_SOURCES: dict[str, str] = {
         r"rentry\.co|rentry\.org|controlc\.com|justpaste\.it|paste\.debian\.net|bpa\.st|"
         r"paste\.mozilla\.org|gist\.github\.com|gist\.githubusercontent\.com|glot\.io|0bin\.net|"
         r"paste\.gg|pastes\.dev|codepad\.org))(?![\w.-])"
-        r"[^\n]{0,256}?(?:\||&&|;)\s*(?:sudo\s+(?:-\S+\s+)*)?"
+        r"[^\n]{0,256}?(?:\||&&|;)\s{0,16}(?:sudo\s{1,16}(?:-\S{1,32}\s{1,16}){0,16})?"
         r"(?:(?:ba|z|da|k)?sh\b(?!\s+-c\b)|iex\b|invoke-expression\b"
-        r"|python[\d.]*(?![\w.])(?!\s+-[cm]\b)|node(?![\w.-])(?!\s+-[ep]\b))"
+        r"|python[\d.]{0,16}(?![\w.])(?!\s+-[cm]\b)|node(?![\w.-])(?!\s+-[ep]\b))"
         # sh -c "$(curl ... host ...)" / eval "$(wget ... host ...)"
-        r"|(?:\b(?:ba|z|da|k)?sh\s+(?:-\w+\s+)*|\beval\s+)[\"']?(?:\$\(|<\(|`)\s*"
+        r"|(?:\b(?:ba|z|da|k)?sh\s{1,16}(?:-\w{1,32}\s{1,16}){0,16}|\beval\s{1,16})[\"']?(?:\$\(|<\(|`)\s{0,16}"
         r"(?:curl|wget)\b[^\n]{0,256}?"
         r"(?:https?://|(?<=[\s\"'(=]))(?!127\.)"
         r"(?:(?:\d{1,3}\.){3}\d{1,3}|(?:www\.)?(?:pastebin\.com|paste\.ee|pastie\.org|"
@@ -146,16 +146,16 @@ PATTERN_SOURCES: dict[str, str] = {
     ),
     "EXA-LU4": (
         # base64 -d ... | shell or interpreter
-        r"\bbase64\s+(?:-\w+\s+)*?(?:-[a-z]*d[a-z]*|--decode)\b[^\n]{0,256}?"
-        r"\|\s*(?:sudo\s+(?:-\S+\s+)*)?"
-        r"(?:(?:ba|z|da|k)?sh\b(?!\s+-c\b)|python[\d.]*(?![\w.])(?!\s+-[cm]\b)"
+        r"\bbase64\s{1,16}(?:-\w{1,32}\s{1,16}){0,16}?(?:-[a-z]{0,16}d[a-z]{0,16}|--decode)\b[^\n]{0,256}?"
+        r"\|\s{0,16}(?:sudo\s{1,16}(?:-\S{1,32}\s{1,16}){0,16})?"
+        r"(?:(?:ba|z|da|k)?sh\b(?!\s+-c\b)|python[\d.]{0,16}(?![\w.])(?!\s+-[cm]\b)"
         r"|perl\b(?!\s+-e\b)|node(?![\w.-])(?!\s+-[ep]\b))"
         # sh -c "$(... base64 -d)" / eval "$(... base64 -d)"
-        r"|(?:\b(?:ba|z|da|k)?sh\s+(?:-\w+\s+)*|\beval\s+)[\"']?(?:\$\(|<\(|`)[^\n]{0,256}?"
-        r"\bbase64\s+(?:-\w+\s+)*?(?:-[a-z]*d[a-z]*|--decode)\b"
+        r"|(?:\b(?:ba|z|da|k)?sh\s{1,16}(?:-\w{1,32}\s{1,16}){0,16}|\beval\s{1,16})[\"']?(?:\$\(|<\(|`)[^\n]{0,256}?"
+        r"\bbase64\s{1,16}(?:-\w{1,32}\s{1,16}){0,16}?(?:-[a-z]{0,16}d[a-z]{0,16}|--decode)\b"
         # PowerShell -EncodedCommand (or an accepted abbreviation) with a payload
-        r"|\b(?:powershell|pwsh)(?:\.exe)?\b[^\n]{0,256}?\s-(?:e|ec|enc\w*)\s+"
-        r"(?:[a-z0-9+/]{16,}={0,2}|\$\w+)"
+        r"|\b(?:powershell|pwsh)(?:\.exe)?\b[^\n]{0,256}?\s-(?:e|ec|enc\w{0,16})\s{1,16}"
+        r"(?:[a-z0-9+/]{16,64}={0,2}|\$\w{1,64})"
         # FromBase64String then iex / Invoke-Expression
         r"|\bfrombase64string\b[\s\S]{0,400}?\b(?:iex|invoke-expression)\b"
         r"|\b(?:iex|invoke-expression)\b[^\n]{0,256}?\bfrombase64string\b"

@@ -345,6 +345,23 @@ def test_max_line_chars_matches_live_rule():
 
     assert rulelab.MAX_LINE_CHARS == _lure_rules.MAX_LINE_CHARS
     assert rulelab.WINDOW_OVERLAP == _lure_rules.WINDOW_OVERLAP
+    assert rulelab.LONG_LINE_KEEP == _lure_rules.LONG_LINE_KEEP
+    assert rulelab._WS_RUN.pattern == _lure_rules._WS_RUN.pattern
+    assert rulelab._LONG_LINE.pattern == _lure_rules._LONG_LINE.pattern
+
+
+def test_search_cross_line_lu4_with_long_iex_line():
+    pat = lure_candidates.PATTERNS["EXA-LU4"]
+    text = (
+        "$b=[Convert]::FromBase64String($p)\n"
+        + "# "
+        + "z " * 100
+        + "iex ([Text.Encoding]::UTF8.GetString($b)) # "
+        + "z " * 2600
+        + "\n"
+    )
+    m, _ = rulelab._search(pat, text)
+    assert m is not None
 
 
 def test_search_finds_padded_match_in_long_line():

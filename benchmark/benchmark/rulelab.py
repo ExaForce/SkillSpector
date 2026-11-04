@@ -39,28 +39,35 @@ from dataclasses import dataclass, field
 import click
 from skillspector.nodes.analyzers.static_runner import MAX_FILE_CHARS
 
-# Lines longer than MAX_LINE_CHARS are matched in overlapping windows (one match per line at most)
-# instead of whole, mirroring ``skillspector.exaforce._lure_rules`` (MAX_LINE_CHARS,
-# WINDOW_OVERLAP and the whitespace collapse); a test keeps the constants equal. This guards
-# against regex blow-up on untrusted dataset files without letting padding hide a match.
+# Mirrors ``skillspector.exaforce._lure_rules`` (a test keeps the constants and the regex
+# sources equal): whitespace runs over 16 chars collapse to one space, the middle of each line
+# over MAX_LINE_CHARS is blanked (length kept) for the whole-text search, and such lines are then
+# searched in overlapping windows (one match per line at most). This guards against regex
+# blow-up on untrusted dataset files without letting padding hide a match.
 MAX_LINE_CHARS = 4096
 WINDOW_OVERLAP = 2048
+LONG_LINE_KEEP = 512
 _LONG_LINE = re.compile(r"[^\n]{%d,}" % (MAX_LINE_CHARS + 1))
-_WS_RUN = re.compile(r"[^\S\n]{65,}")
+_WS_RUN = re.compile(r"[^\S\n]{17,}")
+
+
+def _blank_middle(m: re.Match) -> str:
+    s = m.group(0)
+    return s[:LONG_LINE_KEEP] + " " * (len(s) - 2 * LONG_LINE_KEEP) + s[-LONG_LINE_KEEP:]
 
 
 def _windows(line: str) -> Iterator[str]:
-    line = _WS_RUN.sub(" ", line)
     step = MAX_LINE_CHARS - WINDOW_OVERLAP
     for i in range(0, max(len(line) - WINDOW_OVERLAP, 1), step):
         yield line[i : i + MAX_LINE_CHARS]
 
 
 def _search(pattern: re.Pattern, text: str) -> tuple[re.Match | None, str]:
-    """``pattern.search`` with long lines windowed; returns the match and the text it indexes."""
+    """``pattern.search`` on normalized text with long lines windowed; returns (match, text)."""
+    text = _WS_RUN.sub(" ", text)
     if not _LONG_LINE.search(text):
         return pattern.search(text), text
-    short = _LONG_LINE.sub("", text)
+    short = _LONG_LINE.sub(_blank_middle, text)
     if (m := pattern.search(short)) is not None:
         return m, short
     for line in _LONG_LINE.findall(text):

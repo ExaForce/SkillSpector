@@ -58,17 +58,19 @@ _FLAGS = re.IGNORECASE | re.MULTILINE
 # leave ~quadratic cost on a very long line, so the regexes never see more than one window.
 # ``benchmark/benchmark/rulelab.py`` mirrors these constants so offline and live agree.
 MAX_LINE_CHARS = 4096
-# Consecutive windows overlap by WINDOW_OVERLAP, which must be at least the longest possible
-# match so that a match straddling a window start is wholly inside the previous window. Longest
-# match, from the pattern structure: three ``{0,256}`` gaps (LU1 iex alternative) = 768, plus
-# fixed text (verb, scheme, longest host ``gist.githubusercontent.com`` or a 15-char IPv4,
-# separators, sudo/exec tokens) under ~200, so ~1,000. The only unbounded pieces are whitespace
-# runs and ``sudo`` option chains; whitespace runs over 64 chars are collapsed to one space in
-# long lines before windowing (every pattern accepts a single space wherever it accepts a run).
-# 2048 leaves ample margin.
+# Consecutive windows overlap by WINDOW_OVERLAP, which must exceed the longest possible match of
+# any shipped pattern, so a match straddling a window start lies wholly inside the previous
+# window. Every quantifier in PATTERN_SOURCES is bounded (gaps 256, option chains 16 tokens of
+# at most 32 chars, whitespace runs 16), which makes the maximum finite: 1,939 chars for EXA-LU4
+# and 1,411 for EXA-LU1 (``test_window_overlap_exceeds_longest_match`` recomputes it from the
+# parsed patterns). Whitespace runs over 16 chars are collapsed to one space before matching
+# (``_normalize``): every pattern accepts a single space wherever it accepts a run.
 WINDOW_OVERLAP = 2048
+# Head and tail kept when the middle of a long line is blanked for the whole-file pass, so a
+# multi-line match (FromBase64String ... newline ... iex) that touches a line end still works.
+LONG_LINE_KEEP = 512
 _LONG_LINE = re.compile(r"[^\n]{%d,}" % (MAX_LINE_CHARS + 1))
-_WS_RUN = re.compile(r"[^\S\n]{65,}")
+_WS_RUN = re.compile(r"[^\S\n]{17,}")
 
 # Public, general-purpose paste/snippet services. Never add a host because it appears in the
 # dataset. The EXA-LU1 source below spells this list out (escaped) in each of its host groups.
@@ -109,11 +111,11 @@ PATTERN_SOURCES: dict[str, str] = {
         r"rentry\.co|rentry\.org|controlc\.com|justpaste\.it|paste\.debian\.net|bpa\.st|"
         r"paste\.mozilla\.org|gist\.github\.com|gist\.githubusercontent\.com|glot\.io|0bin\.net|"
         r"paste\.gg|pastes\.dev|codepad\.org))(?![\w.-])"
-        r"[^\n]{0,256}?(?:\||&&|;)\s*(?:sudo\s+(?:-\S+\s+)*)?"
+        r"[^\n]{0,256}?(?:\||&&|;)\s{0,16}(?:sudo\s{1,16}(?:-\S{1,32}\s{1,16}){0,16})?"
         r"(?:(?:ba|z|da|k)?sh\b(?!\s+-c\b)|iex\b|invoke-expression\b"
-        r"|python[\d.]*(?![\w.])(?!\s+-[cm]\b)|node(?![\w.-])(?!\s+-[ep]\b))"
+        r"|python[\d.]{0,16}(?![\w.])(?!\s+-[cm]\b)|node(?![\w.-])(?!\s+-[ep]\b))"
         # sh -c "$(curl ... host ...)" / eval "$(wget ... host ...)"
-        r"|(?:\b(?:ba|z|da|k)?sh\s+(?:-\w+\s+)*|\beval\s+)[\"']?(?:\$\(|<\(|`)\s*"
+        r"|(?:\b(?:ba|z|da|k)?sh\s{1,16}(?:-\w{1,32}\s{1,16}){0,16}|\beval\s{1,16})[\"']?(?:\$\(|<\(|`)\s{0,16}"
         r"(?:curl|wget)\b[^\n]{0,256}?"
         r"(?:https?://|(?<=[\s\"'(=]))(?!127\.)"
         r"(?:(?:\d{1,3}\.){3}\d{1,3}|(?:www\.)?(?:pastebin\.com|paste\.ee|pastie\.org|"
@@ -133,16 +135,16 @@ PATTERN_SOURCES: dict[str, str] = {
     ),
     "EXA-LU4": (
         # base64 -d ... | shell or interpreter
-        r"\bbase64\s+(?:-\w+\s+)*?(?:-[a-z]*d[a-z]*|--decode)\b[^\n]{0,256}?"
-        r"\|\s*(?:sudo\s+(?:-\S+\s+)*)?"
-        r"(?:(?:ba|z|da|k)?sh\b(?!\s+-c\b)|python[\d.]*(?![\w.])(?!\s+-[cm]\b)"
+        r"\bbase64\s{1,16}(?:-\w{1,32}\s{1,16}){0,16}?(?:-[a-z]{0,16}d[a-z]{0,16}|--decode)\b[^\n]{0,256}?"
+        r"\|\s{0,16}(?:sudo\s{1,16}(?:-\S{1,32}\s{1,16}){0,16})?"
+        r"(?:(?:ba|z|da|k)?sh\b(?!\s+-c\b)|python[\d.]{0,16}(?![\w.])(?!\s+-[cm]\b)"
         r"|perl\b(?!\s+-e\b)|node(?![\w.-])(?!\s+-[ep]\b))"
         # sh -c "$(... base64 -d)" / eval "$(... base64 -d)"
-        r"|(?:\b(?:ba|z|da|k)?sh\s+(?:-\w+\s+)*|\beval\s+)[\"']?(?:\$\(|<\(|`)[^\n]{0,256}?"
-        r"\bbase64\s+(?:-\w+\s+)*?(?:-[a-z]*d[a-z]*|--decode)\b"
+        r"|(?:\b(?:ba|z|da|k)?sh\s{1,16}(?:-\w{1,32}\s{1,16}){0,16}|\beval\s{1,16})[\"']?(?:\$\(|<\(|`)[^\n]{0,256}?"
+        r"\bbase64\s{1,16}(?:-\w{1,32}\s{1,16}){0,16}?(?:-[a-z]{0,16}d[a-z]{0,16}|--decode)\b"
         # PowerShell -EncodedCommand (or an accepted abbreviation) with a payload
-        r"|\b(?:powershell|pwsh)(?:\.exe)?\b[^\n]{0,256}?\s-(?:e|ec|enc\w*)\s+"
-        r"(?:[a-z0-9+/]{16,}={0,2}|\$\w+)"
+        r"|\b(?:powershell|pwsh)(?:\.exe)?\b[^\n]{0,256}?\s-(?:e|ec|enc\w{0,16})\s{1,16}"
+        r"(?:[a-z0-9+/]{16,64}={0,2}|\$\w{1,64})"
         # FromBase64String then iex / Invoke-Expression
         r"|\bfrombase64string\b[\s\S]{0,400}?\b(?:iex|invoke-expression)\b"
         r"|\b(?:iex|invoke-expression)\b[^\n]{0,256}?\bfrombase64string\b"
@@ -202,33 +204,52 @@ _HINTS: dict[str, re.Pattern[str]] = {
 }
 
 
+def _normalize(content: str) -> str:
+    """Collapse whitespace runs over 16 chars (newlines kept, so line numbers hold)."""
+    return _WS_RUN.sub(" ", content)
+
+
+def _blank_middle(m: re.Match[str]) -> str:
+    """Blank the middle of a long line but keep its length and its first/last LONG_LINE_KEEP chars."""
+    s = m.group(0)
+    return s[:LONG_LINE_KEEP] + " " * (len(s) - 2 * LONG_LINE_KEEP) + s[-LONG_LINE_KEEP:]
+
+
 def _windows(line: str):
-    """Yield ``MAX_LINE_CHARS``-char windows over a long line, overlapping by WINDOW_OVERLAP."""
-    line = _WS_RUN.sub(" ", line)
+    """Yield (offset, window): ``MAX_LINE_CHARS``-char windows overlapping by WINDOW_OVERLAP."""
     step = MAX_LINE_CHARS - WINDOW_OVERLAP
     for i in range(0, max(len(line) - WINDOW_OVERLAP, 1), step):
-        yield line[i : i + MAX_LINE_CHARS]
+        yield i, line[i : i + MAX_LINE_CHARS]
 
 
-def _long_line_match(rule_id: str, pattern: re.Pattern[str], line: str) -> re.Match[str] | None:
-    """First match of ``pattern`` in any window of one long line (at most one per line)."""
+def _long_line_match(
+    rule_id: str, pattern: re.Pattern[str], line: str
+) -> tuple[int, re.Match[str]] | None:
+    """First match in any window of one long line, as (offset in the line, match)."""
     hint = _HINTS[rule_id]
-    for window in _windows(line):
+    for offset, window in _windows(line):
         if hint.search(window) and (m := pattern.search(window)):
-            return m
+            return offset + m.start(), m
     return None
 
 
 def analyze(content: str, file_path: str, file_type: str) -> list[AnalyzerFinding]:
-    """Find remote-installer lures (EXA-LU1, EXA-LU4) in one file."""
+    """Find remote-installer lures (EXA-LU1, EXA-LU4) in one file.
+
+    Offsets are into the normalized text, which keeps every newline, so line numbers are exact.
+    """
     findings: list[AnalyzerFinding] = []
-    short = _LONG_LINE.sub("", content)  # same newlines, so offsets and line numbers hold
-    long_lines = [(m.start(), m.group(0)) for m in _LONG_LINE.finditer(content)]
+    content = _normalize(content)
+    # Same length as content: only the middle of a long line is blanked.
+    short = _LONG_LINE.sub(_blank_middle, content)
+    long_lines = [(m.start(), m.end(), m.group(0)) for m in _LONG_LINE.finditer(content)]
     for rule_id, pattern in PATTERNS.items():
         hits: list[tuple[int, re.Match[str]]] = [(m.start(), m) for m in pattern.finditer(short)]
-        for line_start, line in long_lines:
-            if (m := _long_line_match(rule_id, pattern, line)) is not None:
-                hits.append((line_start, m))
+        for line_start, line_end, line in long_lines:
+            if any(line_start <= pos <= line_end for pos, _ in hits):
+                continue  # at most one finding per rule per line
+            if (found := _long_line_match(rule_id, pattern, line)) is not None:
+                hits.append((line_start + found[0], found[1]))
         hits.sort(key=lambda h: h[0])
         for count, (start, match) in enumerate(hits):
             if count >= MAX_FINDINGS_PER_RULE:
@@ -237,6 +258,9 @@ def analyze(content: str, file_path: str, file_type: str) -> list[AnalyzerFindin
             line_start = content.rfind("\n", 0, start) + 1
             line_end = content.find("\n", start)
             line = content[line_start : line_end if line_end >= 0 else len(content)]
+            if len(line) > MAX_LINE_CHARS:  # centre the excerpt on the match
+                at = start - line_start
+                line = line[max(0, at - 100) : at + 200]
             findings.append(
                 AnalyzerFinding(
                     rule_id=rule_id,
