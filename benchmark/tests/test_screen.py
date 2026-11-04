@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import signal
 import sys
 import textwrap
 import time
@@ -65,6 +66,10 @@ def _insert_run(con, run_id, outcomes, *, started=None, sha="fake", behavior="ex
         )
 
 
+# pinned output of build_batches for 10 units (u0-u5 stratum a, u6-u9 stratum b), size 3, seed 29
+GOLDEN_BATCHES = [["u5", "u0", "u8"], ["u1", "u4", "u6"], ["u3", "u9"], ["u2", "u7"]]
+
+
 FAKE_BENCHMARK = textwrap.dedent(
     """
     import argparse, json, os, pathlib, subprocess, sys, time
@@ -90,7 +95,10 @@ FAKE_BENCHMARK = textwrap.dedent(
         "looks": len(json.loads(manifest.read_text())["looks"]) if manifest.exists() else None,
     }
     if a.run_id is None:
-        print(f"starting run {rid}")
+        print(f"starting run {rid}", flush=True)
+    if plan.get("fail") == arm:
+        print("boom", flush=True)
+        sys.exit(3)
     if n_calls < plan.get("stall", 0):
         entry["child"] = subprocess.Popen(["sleep", "60"]).pid
         with record.open("a") as f:
@@ -98,10 +106,15 @@ FAKE_BENCHMARK = textwrap.dedent(
         time.sleep(60)
     with record.open("a") as f:
         f.write(json.dumps(entry) + "\\n")
-    import duckdb  # after the stall point: under load its import can outlast --stall-seconds
+    # heartbeats after the stall point keep a slow (loaded) but live fake from looking stalled
+    print("heartbeat: importing", flush=True)
+    import duckdb
+
+    print("heartbeat: imported", flush=True)
 
     units = [x.strip() for x in open(a.units_file) if x.strip()]
     con = duckdb.connect(a.o)
+    print("heartbeat: connected", flush=True)
     if not con.execute("SELECT 1 FROM runs WHERE run_id = ?", [rid]).fetchone():
         con.execute(
             "INSERT INTO runs (run_id, started_at, config_json) VALUES (?, ?, ?)",
@@ -118,6 +131,7 @@ FAKE_BENCHMARK = textwrap.dedent(
             " VALUES (?, ?, ?, ?)",
             [rid, u, pred, "Error" if pred is None else "Completed"],
         )
+        print(f"heartbeat: {u}", flush=True)
     con.close()
     print(f"wrote {a.o} (run id {rid})")
     """
@@ -150,12 +164,13 @@ class Bench:
             monkeypatch.delenv(k)
         self.plan(CONTROL, POSITIVE)
 
-    def plan(self, control, treatment, stall=0):
+    def plan(self, control, treatment, stall=0, fail=None):
         self.plan_path.write_text(
             json.dumps(
                 {
                     "record": str(self.record),
                     "stall": stall,
+                    "fail": fail,
                     "outcomes": {"control": control, "treatment": treatment},
                 }
             )
@@ -210,6 +225,12 @@ def test_build_batches_deterministic_and_proportional():
         assert max(counts) - min(counts) <= 1, (key, counts)
     # a unit missing from the strata map lands in 'unknown'
     assert sorted(u for b in build_batches(["x", "y"], {}) for u in b) == ["x", "y"]
+
+
+def test_build_batches_golden():
+    units = [f"u{i}" for i in range(10)]
+    strata = {u: "a" if i < 6 else "b" for i, u in enumerate(units)}
+    assert build_batches(units, strata, batch_size=3, seed=29) == GOLDEN_BATCHES
 
 
 def test_strata_benign_behavior_corpus_unknown():
@@ -420,6 +441,58 @@ def test_stall_gives_up_after_two_retries(bench):
         while _alive(c["child"]) and time.monotonic() < deadline:
             time.sleep(0.05)
         assert not _alive(c["child"])
+
+
+def test_scan_failure_records_run_id(bench):
+    bench.plan(CONTROL, POSITIVE, fail="treatment")
+    r = bench.invoke()
+    assert r.exit_code != 0 and "scan failed" in r.output
+    b1 = bench.manifest()["batches"][0]
+    assert b1["control"] == ["control-b1"]
+    assert b1["treatment"] == "treatment-b1" and b1["incomplete"] == "treatment"
+
+    bench.plan(CONTROL, POSITIVE, fail="control")
+    r = bench.invoke(label="c")
+    assert r.exit_code != 0
+    b1 = bench.manifest("c")["batches"][0]
+    assert b1["control"] == ["control-b1"] and b1["incomplete"] == "control"
+
+
+def test_manifest_saved_before_judging(bench, monkeypatch):
+    def boom(*a, **k):
+        raise RuntimeError("judge exploded")
+
+    monkeypatch.setattr(screen, "judge", boom)
+    r = bench.invoke()
+    assert r.exit_code != 0
+    b1 = bench.manifest()["batches"][0]
+    assert b1["control"] == ["control-b1"] and b1["treatment"] == "treatment-b1"
+
+
+def test_exit_on_signals_raises_systemexit_and_restores():
+    before = signal.getsignal(signal.SIGTERM), signal.getsignal(signal.SIGHUP)
+    with screen._exit_on_signals():
+        for sig in (signal.SIGTERM, signal.SIGHUP):
+            with pytest.raises(SystemExit) as e:
+                os.kill(os.getpid(), sig)
+            assert e.value.code == 128 + sig
+    assert (signal.getsignal(signal.SIGTERM), signal.getsignal(signal.SIGHUP)) == before
+
+
+def test_stall_seconds_must_be_at_least_one(bench):
+    r = bench.invoke("--stall-seconds", "0")
+    assert r.exit_code != 0 and not bench.calls()
+
+
+def test_extra_control_units_warn(bench):
+    extra = CONTROL | {"Skills/malware/extra": (True, True)}
+    bench.add_runs(("BIG", extra, {}))
+    r = bench.invoke("--control-runs", "BIG")
+    assert r.exit_code == 0, r.output
+    assert any(
+        x.startswith("WARNING") and "outside the units file" in x and "`arms` will refuse" in x
+        for x in r.output.splitlines()
+    ), r.output
 
 
 def test_manifest_written_each_batch(bench):

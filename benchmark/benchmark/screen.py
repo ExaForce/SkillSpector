@@ -21,6 +21,7 @@ killed (whole process group) and resumed with ``--run-id``, at most twice.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import math
 import os
@@ -29,6 +30,7 @@ import random
 import re
 import signal
 import subprocess
+import sys
 import time
 from dataclasses import asdict, dataclass
 from statistics import mean, stdev
@@ -47,8 +49,16 @@ ALLOWANCE = RECALL_FP_PER_TP * FP_FLOOR  # 16: the N_FP >= 2 floor, scaled by n/
 FP_KIND_TP_WEIGHT = 2  # fp kind: -dTP <= (-dFP)/2, i.e. 2·dTP - dFP >= 0
 MAX_RESUMES = 2
 
+
 # The scan command; tests replace it with a fake that never calls an LLM.
-BENCHMARK_CMD = ["uv", "run", "benchmark"]
+def _default_benchmark_cmd() -> list[str]:
+    """The ``benchmark`` console script next to this interpreter (independent of the current
+    directory); ``uv run benchmark`` when it is not installed there."""
+    script = pathlib.Path(sys.executable).with_name("benchmark")
+    return [str(script)] if script.exists() else ["uv", "run", "benchmark"]
+
+
+BENCHMARK_CMD = _default_benchmark_cmd()
 
 
 # --- pure parts -------------------------------------------------------------------------------
@@ -276,6 +286,30 @@ def _kill_group(proc: subprocess.Popen) -> None:
     proc.wait()
 
 
+def _raise_exit(signum, frame):
+    raise SystemExit(128 + signum)
+
+
+@contextlib.contextmanager
+def _exit_on_signals():
+    """SIGTERM/SIGHUP raise ``SystemExit`` so ``_watch``'s ``finally`` kills the scan's process
+    group (it runs in its own session, so the terminal's signals never reach it)."""
+    old = {s: signal.signal(s, _raise_exit) for s in (signal.SIGTERM, signal.SIGHUP)}
+    try:
+        yield
+    finally:
+        for s, h in old.items():
+            signal.signal(s, h)
+
+
+class ScanFailed(SystemExit):
+    """A scan that failed or stalled out; ``run_id`` is the run it started, if its log said."""
+
+    def __init__(self, message: str, run_id: str | None):
+        super().__init__(message)
+        self.run_id = run_id
+
+
 def _watch(cmd: list[str], env: dict[str, str], log: pathlib.Path, stall_seconds: float):
     """Run ``cmd`` with output streamed to ``log``; returns its exit code, or None if it
     stalled (``log`` did not grow for ``stall_seconds``) and was killed."""
@@ -325,13 +359,14 @@ def run_scan(
         wrote = _WROTE.search(text)
         run_id = wrote.group(1) if wrote else run_id
         if rc != 0 or run_id is None:
-            raise SystemExit(
-                f"scan failed (exit {rc}) for run {run_id or '(no run id)'}; see {path}"
+            raise ScanFailed(
+                f"scan failed (exit {rc}) for run {run_id or '(no run id)'}; see {path}", run_id
             )
         return run_id
-    raise SystemExit(
+    raise ScanFailed(
         f"scan stalled {MAX_RESUMES + 1} times; giving up on run {run_id or '(no run id)'}"
-        f" (logs: {log.parent})"
+        f" (logs: {log.parent})",
+        run_id,
     )
 
 
@@ -369,6 +404,15 @@ def _refuse_uncovered(con, side: str, ids: list[str], batches: list[list[str]]) 
         )
 
 
+def _extra_units(con, ids: list[str], units: set[str]) -> int:
+    """Number of distinct units held by the runs ``ids`` that are not in ``units``."""
+    marks = ",".join("?" * len(ids))
+    rows = con.execute(
+        f"SELECT DISTINCT unit_path FROM classifications WHERE run_id IN ({marks})", ids
+    ).fetchall()
+    return sum(1 for (u,) in rows if u not in units)
+
+
 def _open(db: str):
     import duckdb
 
@@ -403,7 +447,7 @@ def _finish(stopped: Look | None, batches: list[list[str]], n_total: int) -> Non
 @click.option("--seed", type=int, default=SEED, show_default=True)
 @click.option("--z", type=float, default=Z, show_default=True)
 @click.option("--min-batches", type=click.IntRange(min=1), default=MIN_BATCHES, show_default=True)
-@click.option("--stall-seconds", type=float, default=1200, show_default=True)
+@click.option("--stall-seconds", type=click.FloatRange(min=1), default=1200, show_default=True)
 @click.option("--auth-wait-seconds", type=float, default=0, show_default=True)
 @click.option("--out-dir", type=click.Path(file_okay=False), default="results/screens")
 @click.option(
@@ -446,8 +490,16 @@ def main(
         if not con.execute("SELECT 1 FROM runs WHERE run_id = ?", [ref_run]).fetchone():
             raise SystemExit(f"unknown --ref-run {ref_run}")
         batches = build_batches(units, strata_for(con, ref_run, units), batch_size, seed)
+        extra_warning = None
         if control_ids:
             _refuse_uncovered(con, "control", control_ids, batches)
+            extra = _extra_units(con, control_ids, set(units))
+            if extra:
+                extra_warning = (
+                    f"control runs {'+'.join(control_ids)} hold {extra} unit(s) outside the"
+                    " units file; the screen proceeds, but `arms` will refuse the printed line"
+                    " because the control and treatment unit sets differ"
+                )
         if simulate_mode:
             treatment_ids = _flat(treatment_runs)
             _refuse_uncovered(con, "treatment", treatment_ids, batches)
@@ -469,6 +521,8 @@ def main(
         f"screen {label} ({kind}): {n_total} units in {len(batches)} batches"
         f" of <= {batch_size} (seed {seed}, z {z:g}, min batches {min_batches})"
     )
+    if extra_warning:
+        click.echo(f"WARNING: {extra_warning}")
     if simulate_mode:
         for w in warnings:
             click.echo(f"WARNING: {w}")
@@ -476,30 +530,31 @@ def main(
         _finish(looks[-1] if looks[-1].stop else None, batches, n_total)
         return
 
-    _run_screen(
-        dataset=str(pathlib.Path(dataset_path).resolve()),
-        db=str(pathlib.Path(db).resolve()),
-        label=label,
-        kind=kind,
-        batches=batches,
-        n_total=n_total,
-        control_runs=",".join("+".join(rep) for rep in parse_replicates(control_runs))
-        if control_runs
-        else None,
-        control_ids=control_ids,
-        env={"control": _parse_env(control_env), "treatment": _parse_env(treatment_env)},
-        z=z,
-        min_batches=min_batches,
-        stall_seconds=stall_seconds,
-        auth_wait_seconds=auth_wait_seconds,
-        screen_dir=pathlib.Path(out_dir) / _slug(label),
-        settings={
-            "units_file": str(pathlib.Path(units_file).resolve()),
-            "ref_run": ref_run,
-            "batch_size": batch_size,
-            "seed": seed,
-        },
-    )
+    with _exit_on_signals():
+        _run_screen(
+            dataset=str(pathlib.Path(dataset_path).resolve()),
+            db=str(pathlib.Path(db).resolve()),
+            label=label,
+            kind=kind,
+            batches=batches,
+            n_total=n_total,
+            control_runs=",".join("+".join(rep) for rep in parse_replicates(control_runs))
+            if control_runs
+            else None,
+            control_ids=control_ids,
+            env={"control": _parse_env(control_env), "treatment": _parse_env(treatment_env)},
+            z=z,
+            min_batches=min_batches,
+            stall_seconds=stall_seconds,
+            auth_wait_seconds=auth_wait_seconds,
+            screen_dir=pathlib.Path(out_dir) / _slug(label),
+            settings={
+                "units_file": str(pathlib.Path(units_file).resolve()),
+                "ref_run": ref_run,
+                "batch_size": batch_size,
+                "seed": seed,
+            },
+        )
 
 
 def _run_screen(
@@ -570,7 +625,18 @@ def _run_screen(
         log = screen_dir / f"b{k:02d}-{arm}.log"
         click.echo(f"batch {k}/{len(batches)}: scanning {arm} (log {log})")
         full_env = {**os.environ, **env[arm], "PYTHONUNBUFFERED": "1"}
-        return run_scan(cmd, full_env, log, stall_seconds)
+        try:
+            return run_scan(cmd, full_env, log, stall_seconds)
+        except ScanFailed as e:
+            if e.run_id:  # keep the id so the scan can be finished by hand (--run-id)
+                entry = manifest["batches"][k - 1]
+                if arm == "control":
+                    entry["control"] = [e.run_id]
+                else:
+                    entry["treatment"] = e.run_id
+                entry["incomplete"] = arm
+                save()
+            raise
 
     batch_controls: list[str] = []
     treatments: list[str] = []
@@ -586,6 +652,7 @@ def _run_screen(
             save()
         treatments.append(scan("treatment", k))
         entry["treatment"] = treatments[-1]
+        save()
         seen += b
         con = _open(db)
         try:
