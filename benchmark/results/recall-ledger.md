@@ -68,6 +68,9 @@ row per run, and one decision block per plan below the table.
 | P5 | dev | control | 2 | `2b226dac1615` | 7d196c53 | none | 2,296 (p5-dev) | OK: dropped 6.5% (149/2296) | TP 664 / FP 214; guard FP 74 |
 | P5 | screen | L lure=on | 1 (union) | 16 batch runs `9603248b33bf`..`b2f41de8c746` | 7d196c53 | `SKILLSPECTOR_EXA_LURE_RULES=on` | 2,296 (p5-dev, 16×≤144) | OK: pooled dropped 5.6% (129/2296); 15 of 16 batches healthy (b07 `48eea52b374b` 10.4%) | TP 701 / FP 221; guard FP 79; screen `p5-L` (v2 rule) PASSED; members in `results/screens/p5-L/manifest.json` |
 | P5 | dev | L lure=on | 2 | `3ac394158e63` | 7d196c53 | `SKILLSPECTOR_EXA_LURE_RULES=on` | 2,296 (p5-dev) | OK: dropped 5.5% (127/2296) | TP 715 / FP 215; guard FP 80; 1 ERROR |
+| P5 | preflight | L lure=on | 1 | `a98f3794c22f` | 8ab36a84 | `SKILLSPECTOR_EXA_LURE_RULES=on` | 1 | OK | final pair preflight: TP |
+| P5 | final | control | 1 | `0e0f9e105cf8` | 8ab36a84 | none | 12,718 | OK: dropped 8.1% (1031/12718), 0 errors | SSO expired at 9,033, resumed with `--run-id`; TP 4522 / FP 373; guard FP 86 |
+| P5 | final | L lure=on | 1 | `93c1faec5bec` | 8ab36a84 | `SKILLSPECTOR_EXA_LURE_RULES=on` | 12,718 | OK: dropped 8.4% (1064/12718), 0 errors | TP 4622 / FP 362; guard FP 79; on `M` (301): +41 TP / 0 FP -> ACCEPTED |
 
 ## P0
 
@@ -514,35 +517,72 @@ L must carry an `EXA-LU*` finding, and so must a TP that L gained.
 - **The guard rise is LLM noise.** 46 of the 246 guard units change outcome between the two identical controls, and 80
   change across the four replicates. The controls' total FP matched (214 and 214) by chance, so N_FP sits at its floor
   of 2, while 257 benign dev units vary across replicates.
-- **Gains with an LU finding:** units FN in both controls and TP in L:
-  - union: 62 such units, 25 of them with an LU finding (LU4 18, LU1 7);
-  - r2: 72 such units, 32 with an LU finding (LU4 23, LU1 9).
-
-  So about 28 of the +46 ΔTP is attributable to L. The rest is drift that favoured the treatment, and it is the same
-  order as N_TP-scale noise. 38–39 malicious units carry an LU finding but stay FN.
-- **Offline prediction against live.** The replay predicted about 58 FN→TP flips on the full set at baseline-v2, and every
-  matched unit is in p5-dev. Live, the attributable gain is 25–32. Two causes are likely:
-  - the units' LLM findings differ from baseline-v2's run to run, and the replay assumed baseline-v2 risk scores;
-  - 38–39 matched FNs stay below 50 even with the finding.
+- **Gains with an LU finding.** *Corrected after the final review (I2).* The first count required FN in both controls
+  and TP in L: 25 units in the union and 32 in r2, which I reported as "about 28 of +46". That undercounts, because it
+  drops units that were FN in only one control.
+  - **Matched units:** on the 305 offline-matched dev units, L moved +48.5 TP / −0.5 FP against the control mean.
+  - **All other dev units:** −2.5 TP / +4.5 FP. The whole guard rise is in units the rules cannot touch.
+  - **Expected full-set gain:** about +0.76 recall points, not +0.45.
+- **Offline prediction against live.** *Corrected (I3).* The "2× overestimate" came from looking only at matched FNs
+  that stayed FN, which is selection bias. Over all 58 matched units that were FN in both controls, the median risk gain
+  was +23.0 (union) and +33.2 (r2).
 
 ### Decision (Task 3, Step 3)
 
 The `arms` verdict is PROMISING. Under Step 3 ("choose the best PROMISING arm whose guard passes"), however, the guard
-as written fails at +4.5 against N_FP = 2, so no arm qualifies. The per-unit attribution shows the failure measures LLM
-drift on 46+ flipping units, not the rule, which touches 2 guard units and at most 0.5 FP. Overriding a
-pre-registered guard after seeing results is the user's call, as with bar 3 (P5-R16). Task 4 is held for that decision.
+as written fails at +4.5 against N_FP = 2, so no arm qualifies. Per-unit attribution shows the failure measures LLM
+drift, not the rule: 46+ guard units flip between runs, while the rule touches 2 guard units and at most 0.5 FP.
+Overriding a pre-registered guard after seeing results is the user's call, as with bar 3 (P5-R16).
+- **First user decision:** "reject as written". It rested partly on my +0.45-point estimate, which was wrong (see
+  above).
+- **After the correction:** the user re-registered acceptance on the rule-affected units `M` in `21e37201`, recorded in
+  the plan before any Task 4 run. This is a post-hoc change.
+  - **Recall:** ΔTP over `M`'s malicious units ÷ 6,403 ≥ +0.005.
+  - **Precision and guard:** ΔFP over `M`'s benign units ≤ N_FP = 2.
+  - **Holdout:** `M`'s holdout units must have ΔTP ≥ 0. If `M` has none, the criterion is information only.
+  - **Health:** both runs healthy.
 
-**Final (user decision, 2026-11-04): REJECTED.** The guard is applied as pre-registered, and no re-registration is made. No
-final full runs. `SKILLSPECTOR_EXA_LURE_RULES` stays off. The expected full-set gain from the rules (about 28 TP, roughly +0.45 recall points) is
-also under the spec's +0.5 minimum, so Task 4 would have been decided by noise. Overview:
-`results/recall-p5-report.md`.
+### Final-review fix wave
+
+The final review found that the LU1 regex backtracks cubically on crafted long lines (I1). Three fix commits followed:
+- `f8ed9439`: bounded gaps.
+- `3433ba97`: windowed long lines instead of skipping them, because skipping was an evasion.
+- `8ab36a84`: exact positions, every quantifier bounded, whitespace runs collapsed.
+
+A scoped re-check came back clean, and the offline match set is unchanged (305). Residual minors are listed in the
+report's Handoffs.
+
+### Final acceptance (Task 4)
+
+Full control `0e0f9e105cf8` and full L `93c1faec5bec`, both at `8ab36a84`, all 12,718 units, both healthy (8.1% and
+8.4%). `M` has 301 units: 298 malicious, 3 benign, 0 holdout.
+
+| criterion | measured | needed | result |
+|---|---|---|---|
+| recall on `M` | +41 TP → +0.0064 | ≥ +0.005 | PASS |
+| ΔFP on `M` benign | 0 | ≤ 2 | PASS |
+| holdout | `M` has no holdout units | information only | — |
+| health | 8.1% / 8.4% | ≤ 10% | PASS |
+
+- **Flips inside `M`:** 51 FN→TP and 10 TP→FN. The losses are drift, because a static finding cannot lower risk.
+- **Drift outside `M`:** +59 TP / −11 FP. That implies about +3 TP of drift inside `M`, so the corrected gain is about +38
+  (+0.0059). Acceptance was applied to the raw numbers as registered (P5-R20).
+- **Information:** whole set recall 0.7062 → 0.7218, precision 0.9238 → 0.9274; holdout recall +0.0080, all drift;
+  fetch-line guard FP 86 → 79.
+- **Slices:** STB dropper cells +0.142, native wild +0.029, MSB-wild +0.033 (drift).
+
+**Final: ACCEPTED.** The default was flipped in `45fb9511`: lure rules are on unless `SKILLSPECTOR_EXA_LURE_RULES=off`.
+That commit also fixed lint left by the fix wave. Overview: `results/recall-p5-report.md`.
 
 ### Handoffs to P6+
 
-- **Near miss:** about +28 TP at ≤ 0.5 FP on dev, mostly STB dropper cells (+0.201 recall) and native-wild droppers.
-  Re-measure under any scoring-path plan. Code: `553b7d0d..7d196c53`.
-- **`rulelab` replay overestimates about 2×.** Matched FNs that stay FN gain a median of about 11 risk points from a
-  HIGH finding at confidence ≥ 0.9, not 20. Locate the loss before P6 relies on replay.
-- **Guard noise floor:** the 246-unit guard flips 46 units control-vs-control. Pre-register future guards as attributable
-  (FPs carrying the candidate's own finding) or against the guard's own control spread.
-- **Offline/live match gap:** 3 of 5 offline benign `EXA-LU4` matches produced no live finding.
+- **Static HIGH findings lose points downstream.** 10 matched units fell TP→FN to risk 43–47 despite a HIGH `EXA-LU*`
+  finding at confidence 0.95–1.0, and the 38 matched units that stay FN cluster near 47.
+  - Hypothesis (unverified): the fork's "meta-analyzer verdict over static severity" patch.
+  - That is the scoring-path lever for P6.
+- **Flag provenance.** Unset `SKILLSPECTOR_EXA_LURE_RULES` means off before `45fb9511` and on from it. Controls without the
+  rules must now set `=off`, because `arms` and resume pinning compare env values only.
+- **Guard noise floor.** The 246-unit guard flips 46 units control-vs-control. Pre-register future guards as attributable
+  (FPs that carry the candidate's own finding) or against the guard's own control spread.
+- **Attribution.** Count every flip in the units a candidate touches, not only units that were FN in both controls.
+- **Offline/live match gap.** 4 of 305 offline matches (2 benign, 2 malicious) get no live finding.
