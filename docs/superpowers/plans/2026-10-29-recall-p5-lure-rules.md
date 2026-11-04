@@ -140,6 +140,14 @@ If no candidate is `IMPLEMENT`, skip to Task 4 and write a REJECTED overview fro
   - L: `LURE_RULES=on`;
   - L+gate: L plus the HIGH `EXA-LU*` rules appended to `SKILLSPECTOR_EXA_GATE_RULES`, only if P1's gate is
     accepted.
+
+  Each candidate runs `uv run screen` first, reusing the day's control runs; a FUTILE screen is that candidate's dev
+  verdict, REJECT (spec, "Sequential futility screen"). Both are recall-raising (`--kind recall`, the default):
+  ```bash
+  uv run screen /Users/will/workspace/MalSkillBench/Dataset --db results/recall.duckdb \
+    --units-file results/evalsets/p5-dev.txt --ref-run $BV2 --label p5-L \
+    --control-runs <c1>,<c2> --treatment-env SKILLSPECTOR_EXA_LURE_RULES=on
+  ```
 - [ ] **Step 3:** For each arm, record into the ledger:
   - ΔTP;
   - ΔTP on annotated `CORRECT` units against `intent`-tier units, kept separate;

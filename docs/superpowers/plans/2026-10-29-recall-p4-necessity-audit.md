@@ -159,6 +159,15 @@ purpose-fit payloads, not "operational-step framing".
   - B+gate;
   - one prompt revision of the best arm, under P3's rule: error classes from at most 10 FNs and 10 FPs, committed
     before it runs.
+
+  Arm A is already run. Each remaining candidate (B, B+gate if ever enabled, and the prompt revision, especially) runs
+  `uv run screen` first, reusing the day's control runs; a FUTILE screen is that candidate's dev verdict, REJECT
+  (spec, "Sequential futility screen"). All are recall-raising, so the default `--kind recall` applies:
+  ```bash
+  uv run screen /Users/will/workspace/MalSkillBench/Dataset --db results/recall.duckdb \
+    --units-file results/evalsets/p4-dev.txt --ref-run $BV2 --label p4-B \
+    --control-runs <c1>,<c2> --treatment-env SKILLSPECTOR_EXA_NECESSITY=on
+  ```
 - [ ] **Step 3:** For each arm, record into the ledger:
   - ΔTP and ΔFP overall;
   - ΔTP on Content Manipulation units;

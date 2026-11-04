@@ -49,6 +49,9 @@ and a parity test keeps it identical to replay.
 
 ### Task 1: Paired offline sweep on a fresh full run
 
+The sequential futility screen (`uv run screen`) does not apply here: candidates are judged offline with `replay`, not
+with live scans.
+
 - [ ] **Step 1:** Preflight. Then run one full run with the current defaults, which include every accepted change
   from P1-P5. Use `--description "p6 full control (current defaults)"`. Check `health`.
 - [ ] **Step 2:** For each T in the grid, run `uv run replay results/recall.duckdb <run> --policy '{"threshold": T}'`,

@@ -151,6 +151,49 @@ CTE at the top to target a different run or span all of them.
 | `13_label_coverage.sql` | How ground-truth labels were resolved (bounds trust in 03/05) |
 | `14_top_rules.sql` | Which rules fire, on malicious vs benign (false-positive drivers) |
 
+## Screening a candidate (`screen`)
+
+`uv run screen` rejects a failing dev-arm candidate early. It splits a units file into stratified batches of about 150
+units (no unit repeats; seed 29), scans one batch at a time with the `benchmark` command as a subprocess, pairs
+treatment with same-day control on every unit judged so far, and applies the pre-registered futility boundary from the
+spec (`docs/superpowers/specs/2026-10-29-recall-improvement-program.md`, "Sequential futility screen"). It stops only to
+reject; it never accepts. A candidate that passes goes on to the standard dev verdict with `arms`.
+
+```bash
+uv run screen /path/to/MalSkillBench/Dataset --db results/recall.duckdb \
+  --units-file results/evalsets/p4-dev.txt --ref-run <baseline run> --label p4-B \
+  --control-runs <c1>,<c2> --treatment-env SKILLSPECTOR_EXA_NECESSITY=on
+```
+
+Options:
+- `--db`, `--units-file`, `--ref-run` (its `evaluation` rows give the strata), `--label` (names the screen dir and the
+  scans' descriptions): required.
+- `--kind recall|fp` (default `recall`): `fp` uses the FP-reducing score, mirroring `arms --kind`.
+- `--treatment-env K=V`, `--control-env K=V`: env for the scans (repeatable).
+- `--control-runs`: reuse these same-day control runs (replicates by comma, unions by `+`) instead of scanning control
+  per batch. They must cover every unit.
+- `--batch-size` (150), `--seed` (29), `--z` (2.8), `--min-batches` (3): the pre-registered constants; do not tune.
+- `--stall-seconds` (1200): a scan whose log has not grown for this long is killed (whole process group) and resumed
+  with `--run-id`, at most twice; then the screen stops with an error naming the run.
+- `--auth-wait-seconds` (0): passed through to the scans.
+- `--out-dir` (default `results/screens`): the screen writes to `<out-dir>/<label-slug>/`.
+
+Outputs:
+- After each batch, a table of the look: units scanned, units judged, errors excluded, dTP, dFP, `D`, `SE`,
+  `D + z·SE`, the boundary, and whether it is FUTILE.
+- Files in the screen dir: `manifest.json` (batches, run ids, looks, warnings, result) and the per-scan logs
+  `bNN-<arm>.log`. A screen refuses to reuse a dir that already has `manifest.json`; pick another `--label` or
+  `--out-dir`. There is no automatic resume.
+- The last line is `SCREEN: FUTILE at batch k (m units)`, where m is the units scanned so far, or
+  `SCREEN: PASSED (n units)`. On PASSED it also prints an `arms:` line with the `--control` and `--treatment` run
+  ids to pass to `arms`: the union of the batch runs is treatment replicate 1. Run one more full replicate of each arm
+  the same day, then `arms` judges.
+- Warnings (not refusals) when the control's date or git sha differs from the treatment's.
+
+`--simulate` judges existing full runs without scanning: pass the treatment runs with `--treatment-runs` and the
+control with `--control-runs`. It writes no files and runs no scans, so it is a safe way to check what the screen would
+have done on past runs.
+
 ## Comparing two runs (PR-ready report)
 
 The `report` command compares two runs in a DB and emits a markdown summary —
