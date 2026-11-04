@@ -84,9 +84,10 @@ Not findings:
 installed or stored, how it could be misused, a missing confirmation or validation): \
 the question is whether the purpose needs the step, not whether the step could be \
 risky;
-- a rule that only restricts the agent or protects the user, such as not revealing a \
-secret;
-- an output, delivery or follow-up step that the stated purpose implies;
+- a rule that only protects the user's or other people's data, such as not revealing a \
+secret; a rule that hides what the agent does from the user is not covered by this;
+- an output or follow-up step that the stated purpose implies, delivered to the user or \
+to a destination the user chose;
 - bugs or quality problems.
 
 Report each finding as rule_id EXA-NE1, with start_line on the line where the step or \
