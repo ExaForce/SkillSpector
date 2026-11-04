@@ -57,8 +57,14 @@ def test_health_flags_llm_run_without_semantic_rules():
 
 
 def test_health_flags_dropped_llm_calls():
-    problems = check_health(_make_run(dropped=2), "r")
-    assert any("10.0%" in p for p in problems)
+    problems = check_health(_make_run(dropped=3), "r")
+    assert any("15.0%" in p and "> 10%" in p for p in problems)
+
+
+def test_health_dropped_threshold_is_ten_percent():
+    assert check_health(_make_run(n=100, dropped=10), "r") == []  # exactly 10% passes
+    problems = check_health(_make_run(n=100, dropped=11), "r")  # just over 10% fails
+    assert any("dropped LLM calls in 11.0% of scans (11/100) > 10%" in p for p in problems)
 
 
 def test_health_ok():
@@ -85,7 +91,7 @@ def test_health_null_run_time_and_null_calls_are_tolerated():
 
 
 def test_check_health_is_pooled_check_of_one_run():
-    for kw in ({}, {"semantic": False}, {"dropped": 2}, {"errors": 2}, {"run_time": 1.0}):
+    for kw in ({}, {"semantic": False}, {"dropped": 3}, {"errors": 2}, {"run_time": 1.0}):
         con = _make_run(**kw)
         assert check_health(con, "r") == check_health_pooled(con, ["r"])
     con = _make_run()
