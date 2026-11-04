@@ -136,7 +136,8 @@ If no candidate is `IMPLEMENT`, skip to Task 4 and write a REJECTED overview fro
   ```
   Have `rulelab` also write `results/evalsets/p5-matched.txt`, and use it for the last clause. Then build
   `p5-dev.txt` as core plus focus, regenerate the splits, and record the composition.
-- [ ] **Step 2:** Preflight. Control ×2. Candidates ×2, each with `arms` against control:
+- [ ] **Step 2:** Preflight. Control ×2. Candidates, each screened first (see below), then one more full run and `arms` against
+  control:
   - L: `LURE_RULES=on`;
   - L+gate: L plus the HIGH `EXA-LU*` rules appended to `SKILLSPECTOR_EXA_GATE_RULES`, only if P1's gate is
     accepted.

@@ -152,7 +152,8 @@ purpose-fit payloads, not "operational-step framing".
   Then add the setup-language benign guard. Use `grep -l -i -E 'preflight|before (you|using)|must (first|always)|setup|clean ?up|always (report|include|format)'`
   over `Skills/benign/*/SKILL.md`, deterministically sample 300 (seed 29), and append them to `p4-focus.txt`.
   Record that list's command in the evalset README. Build `p4-dev.txt` and regenerate the splits.
-- [ ] **Step 2:** Preflight. Control ×2. Candidates ×2, each with `arms` against control:
+- [ ] **Step 2:** Preflight. Control ×2. Candidates (arm A ran ×2 before the screen existed; every later candidate is screened
+  first, see below, then gets one more full run and `arms` against control):
   - A: `SSD5=on`;
   - A+gate: `SSD5=on` with `SSD-5` appended to `SKILLSPECTOR_EXA_GATE_RULES`, only if P1's gate is accepted;
   - B: `NECESSITY=on` (run when A is not PROMISING, or when A's ΔTP < 32);

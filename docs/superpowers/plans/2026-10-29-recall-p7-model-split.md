@@ -76,7 +76,8 @@ and the fork patch framework.
 - [ ] **Step 1:** Dev set: the union of `core-dev.txt` and the focus sets of every plan whose target slot is in use
   (`p3-focus.txt`, `p4-focus.txt`, or `p1-dev.txt` for the SSD fallback). Write it as `p7-dev.txt`, and regenerate
   the splits.
-- [ ] **Step 2:** Preflight. Control ×2. Then each passing candidate ×2 (at most 3 candidates, so 6 runs). Run
+- [ ] **Step 2:** Preflight. Control ×2. Then each passing candidate (at most 3), screened first (see below), then one more full
+  run. Run
   `health` after each. Judge each candidate with `uv run arms` against control, then apply the cost guard and the
   rule_id check (Review Focus 2).
   Run each candidate through `uv run screen` first (`--kind recall`, `--control-runs <the day's control runs>`, the
