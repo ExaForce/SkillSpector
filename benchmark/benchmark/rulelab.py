@@ -38,6 +38,11 @@ from dataclasses import dataclass, field
 
 import click
 from skillspector.nodes.analyzers.static_runner import MAX_FILE_CHARS
+from skillspector.nodes.report import _SEVERITY_POINTS
+
+from .dataset_handler.malskillbench import MalSkillBenchHandler
+from .models import Unit
+from .report.query import one, rows
 
 # Mirrors ``skillspector.exaforce._lure_rules`` (a test keeps the constants and the regex
 # sources equal): whitespace runs over 16 chars collapse to one space, the middle of each line
@@ -47,7 +52,7 @@ from skillspector.nodes.analyzers.static_runner import MAX_FILE_CHARS
 MAX_LINE_CHARS = 4096
 WINDOW_OVERLAP = 2048
 LONG_LINE_KEEP = 512
-_LONG_LINE = re.compile(r"[^\n]{%d,}" % (MAX_LINE_CHARS + 1))
+_LONG_LINE = re.compile(rf"[^\n]{{{MAX_LINE_CHARS + 1},}}")
 _WS_RUN = re.compile(r"[^\S\n]{17,}")
 
 
@@ -75,11 +80,7 @@ def _search(pattern: re.Pattern, text: str) -> tuple[re.Match | None, str]:
             if (m := pattern.search(window)) is not None:
                 return m, window
     return None, text
-from skillspector.nodes.report import _SEVERITY_POINTS
 
-from .dataset_handler.malskillbench import MalSkillBenchHandler
-from .models import Unit
-from .report.query import one, rows
 
 BENIGN_PER_MILLE = 2  # bar 1: at most 0.2% of benign units
 MIN_FLIPS = 15  # bar 2: replay FN -> TP flips

@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Remote-installer lure static analyzer (EXA-LU1, EXA-LU4), gated by ``SKILLSPECTOR_EXA_LURE_RULES=on``.
+"""Remote-installer lure static analyzer (EXA-LU1, EXA-LU4); on by default, ``SKILLSPECTOR_EXA_LURE_RULES=off`` disables it.
 
 Install instructions that hand the agent (or its user) code from an anonymous source:
 
@@ -32,6 +32,7 @@ time stays near-linear on adversarial single-line input.
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 import sys
@@ -44,6 +45,8 @@ from skillspector.state import AnalyzerNodeResponse, SkillspectorState
 from . import _analyzer_registry
 from ._hidden_text import FORK_CONTEXT_PREFIX
 from ._patchlib import PatchDriftError
+
+logger = logging.getLogger(__name__)
 
 ANALYZER_ID = "exaforce_lure_rules"
 LURE_RULES_ENV = "SKILLSPECTOR_EXA_LURE_RULES"
@@ -69,7 +72,7 @@ WINDOW_OVERLAP = 2048
 # Head and tail kept when the middle of a long line is blanked for the whole-file pass, so a
 # multi-line match (FromBase64String ... newline ... iex) that touches a line end still works.
 LONG_LINE_KEEP = 512
-_LONG_LINE = re.compile(r"[^\n]{%d,}" % (MAX_LINE_CHARS + 1))
+_LONG_LINE = re.compile(rf"[^\n]{{{MAX_LINE_CHARS + 1},}}")
 _WS_RUN = re.compile(r"[^\S\n]{17,}")
 
 # Public, general-purpose paste/snippet services. Never add a host because it appears in the
@@ -190,7 +193,13 @@ REMEDIATIONS: dict[str, str] = {
 
 
 def _enabled() -> bool:
-    return os.environ.get(LURE_RULES_ENV) == "on"
+    """On unless ``SKILLSPECTOR_EXA_LURE_RULES=off`` (default-on since P5 acceptance)."""
+    raw = os.environ.get(LURE_RULES_ENV, "").strip().lower()
+    if raw == "off":
+        return False
+    if raw not in ("", "on"):
+        logger.warning("%s=%r is not 'on' or 'off' — using 'on'.", LURE_RULES_ENV, raw)
+    return True
 
 
 # Cheap per-window necessary conditions (a match needs an IP/paste host for LU1, base64 or

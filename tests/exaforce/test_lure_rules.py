@@ -168,7 +168,9 @@ def test_padded_long_line_lure_detected():
         " " * 5000 + IP_FETCH_EXEC + " " * 5000,
     ):
         assert _ids("# s\n" + line + "\n") == ["EXA-LU1"]
-    findings = lure.analyze("a\nb\n" + pad + IP_FETCH_EXEC + " " + pad + "\n", "SKILL.md", "markdown")
+    findings = lure.analyze(
+        "a\nb\n" + pad + IP_FETCH_EXEC + " " + pad + "\n", "SKILL.md", "markdown"
+    )
     assert [f.location.start_line for f in findings] == [3]
 
 
@@ -246,6 +248,23 @@ def test_lure_findings_reach_report(tmp_path):
 
 
 def test_flag_off_no_lure_findings(tmp_path, monkeypatch):
-    monkeypatch.delenv("SKILLSPECTOR_EXA_LURE_RULES", raising=False)
+    monkeypatch.setenv("SKILLSPECTOR_EXA_LURE_RULES", "off")
     _skill(tmp_path)
     assert not [i for i in _report_ids(tmp_path) if i.startswith("EXA-LU")]
+
+
+def test_flag_unset_is_on_by_default(tmp_path, monkeypatch):
+    monkeypatch.delenv("SKILLSPECTOR_EXA_LURE_RULES", raising=False)
+    _skill(tmp_path)
+    assert "EXA-LU1" in _report_ids(tmp_path)
+
+
+def test_flag_unknown_value_warns_and_stays_on(monkeypatch, caplog):
+    from skillspector.exaforce import _lure_rules
+
+    monkeypatch.setenv("SKILLSPECTOR_EXA_LURE_RULES", "false")
+    with caplog.at_level("WARNING"):
+        assert _lure_rules._enabled() is True
+    assert "SKILLSPECTOR_EXA_LURE_RULES" in caplog.text
+    monkeypatch.setenv("SKILLSPECTOR_EXA_LURE_RULES", " OFF ")
+    assert _lure_rules._enabled() is False
