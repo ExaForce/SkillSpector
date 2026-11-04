@@ -75,6 +75,20 @@ and comes first):
 requires (Q1 = yes) is not a finding, however powerful it sounds; ordinary setup and \
 reporting steps the purpose calls for are normal.
 
+Output rules count as steps. A rule that adds, removes, reorders or changes facts, \
+numbers, sources or recommendations in the output, without the user asking for that, \
+answers Q3 = yes.
+
+Not findings:
+- a possible weakness or risk in how a needed step is carried out (where something is \
+installed or stored, how it could be misused, a missing confirmation or validation): \
+the question is whether the purpose needs the step, not whether the step could be \
+risky;
+- a rule that only restricts the agent or protects the user, such as not revealing a \
+secret;
+- an output, delivery or follow-up step that the stated purpose implies;
+- bugs or quality problems.
+
 Report each finding as rule_id EXA-NE1, with start_line on the line where the step or \
 rule is written. The message names the step and why the purpose does not need it, in \
 one sentence. Confidence is how sure you are that the purpose does not require it.
