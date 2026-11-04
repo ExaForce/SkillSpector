@@ -28,6 +28,7 @@ attribution = "benchmark.attribution:main"
 arms = "benchmark.arms:main"
 screen = "benchmark.screen:main"
 evalset = "benchmark.evalset:main"
+rulelab = "benchmark.rulelab:main"
 
 [dependency-groups]
 dev = ["pytest>=8"]
