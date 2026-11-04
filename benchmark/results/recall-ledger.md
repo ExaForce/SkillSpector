@@ -62,6 +62,12 @@ row per run, and one decision block per plan below the table.
 | P4 | dev | B-rev necessity=on | 2 | `42a3e8b7a72c` | 75f9f822 | `SKILLSPECTOR_EXA_NECESSITY=on` | 2,393 (p4-dev) | UNHEALTHY: dropped 7.6% | TP 579 / FP 252 |
 | P4 | dev | B-rev necessity=on | 1b | `2cf05e51e07e` | 75f9f822 | `SKILLSPECTOR_EXA_NECESSITY=on` | 2,393 (p4-dev) | UNHEALTHY: dropped 9.4% | TP 572 / FP 257; replacement for the screen union, also unhealthy; used (P4-R10, P4-R17) |
 | P4 | dev | B-rev necessity=on | 2b | `1fe745793100` | 75f9f822 | `SKILLSPECTOR_EXA_NECESSITY=on` | 2,393 (p4-dev) | UNHEALTHY: dropped 7.9% | TP 567 / FP 271; replacement for r2, also unhealthy; used (P4-R10, P4-R17) |
+| P5 | preflight | L lure=on | 1 | `f5ce06e02dfd` | 7d196c53 | `SKILLSPECTOR_EXA_LURE_RULES=on` | 1 | OK | `pptx__skillharm-fpp-a4db25e26d`: TP, LLM 5/5 |
+| P5 | e2e | L lure=on | 1 | `a6f536863de0` | 7d196c53 | `SKILLSPECTOR_EXA_LURE_RULES=on` | 1 | OK (1/5 calls dropped) | `Currency__stb-case_01883`: 2× `EXA-LU1` HIGH in the report; TP |
+| P5 | dev | control | 1 | `85b4ac355198` | 7d196c53 | none | 2,296 (p5-dev) | OK: dropped 5.6% (129/2296) | TP 660 / FP 214; guard FP 76 |
+| P5 | dev | control | 2 | `2b226dac1615` | 7d196c53 | none | 2,296 (p5-dev) | OK: dropped 6.5% (149/2296) | TP 664 / FP 214; guard FP 74 |
+| P5 | screen | L lure=on | 1 (union) | 16 batch runs `9603248b33bf`..`b2f41de8c746` | 7d196c53 | `SKILLSPECTOR_EXA_LURE_RULES=on` | 2,296 (p5-dev, 16×≤144) | OK: pooled dropped 5.6% (129/2296); 15 of 16 batches healthy (b07 `48eea52b374b` 10.4%) | TP 701 / FP 221; guard FP 79; screen `p5-L` (v2 rule) PASSED; members in `results/screens/p5-L/manifest.json` |
+| P5 | dev | L lure=on | 2 | `3ac394158e63` | 7d196c53 | `SKILLSPECTOR_EXA_LURE_RULES=on` | 2,296 (p5-dev) | OK: dropped 5.5% (127/2296) | TP 715 / FP 215; guard FP 80; 1 ERROR |
 
 ## P0
 
@@ -440,3 +446,88 @@ threshold of 50). The Task 2 E2E unit shows the same cap: HIGH 0.9, risk 22, FN.
   non-string frontmatter values through `str()`; the NE1 chunk budget ignores the ≤600-character purpose header.
 - **Screen v2 in use:** B-rev's screen passed and its full-run verdict was REJECT by 3.5 FP, so the screen behaved as a
   futility screen should (it does not promise PROMISING).
+
+## P5
+
+Plan: `docs/superpowers/plans/2026-10-29-recall-p5-lure-rules.md` (amended in `067cdd0c`: replay precision bar, and a
+10% health threshold from P5 onward, both user decisions on 2026-11-04 made before any dependent run).
+
+### Offline (Task 1)
+
+`uv run rulelab` over baseline-v2 `e16e394f65c3` (`results/recall-p5-offline.md`, notes in
+`results/recall-p5-offline-notes.md`). Under the re-registered per-rule bar (benign matched ≤ 12, and ≥ 15 baseline-v2
+FNs that one added finding at severity points × 0.8 would lift past risk 50):
+- `EXA-LU1` (pipe-to-shell from an IP literal or a public paste service): IMPLEMENT. Replay FN→TP 16 of 25 matched, TN→FP 0.
+- `EXA-LU4` (base64 decode piped into an interpreter or eval): IMPLEMENT. Replay FN→TP 42 of 72 matched, TN→FP 1
+  (`skill-security-audit`).
+- `EXA-LU2` (archive password plus run instruction): DROP (replay FN→TP 4). `EXA-LU3` (skip-verification install): DROP (0).
+
+The regexes have one version (v0), with no revisions. Code: `7d196c53`, flag `SKILLSPECTOR_EXA_LURE_RULES=on`, LU1 and LU4 only,
+HIGH, confidence 0.9.
+
+### Evaluation sets (Task 3)
+
+- `results/evalsets/p5-focus.txt` (1,034 units, no cap, P5-R14) and `p5-dev.txt` (core-dev ∪ focus, 2,296 units:
+  1,342 malicious, TP 646 / FN 696 at baseline-v2; 954 benign, FP 203 / TN 751). `splits.tsv` regenerated: 4,241 dev /
+  8,477 holdout. Commands are in `results/evalsets/README.md`.
+- Guard: `results/evalsets/p5-guard-fetch.txt`, the 246 benign p5-dev units with a `curl|wget|iwr|Invoke-WebRequest`
+  line (P5-R8), FP 73 at baseline-v2. Allowed rise: N_FP.
+
+### Dev arms (Task 3)
+
+All runs were made on 2026-11-04 on `p5-dev.txt` at `7d196c53`. One candidate: L (`SKILLSPECTOR_EXA_LURE_RULES=on`).
+L+gate was not run, because P1's gate was rejected. L was screened first (`uv run screen`, v2 rule, reusing both
+controls); the screen PASSED at batch 16 with every stop column `no`. L then got one more full run.
+
+All four replicates pass `health` at 10%. The screen union is judged pooled (5.6%), as in P4. One of its 16 batches,
+b07, dropped 10.4% on its own (P5-R15).
+
+`uv run arms results/recall.duckdb --control 85b4ac355198,2b226dac1615 --treatment <p5-L union>,3ac394158e63`:
+
+| arm | replicates | TP | FP | recall | precision |
+|---|---|---|---|---|---|
+| control | 2 | 662.0 | 214.0 | 0.4933 | 0.7557 |
+| L | 2 | 708.0 | 218.0 | 0.5278 | 0.7646 |
+
+N_TP = 4, N_FP = 2. ΔTP +46.0 ≥ 8 and ΔFP +4.0 ≤ max(2, 5.75), so the verdict is **PROMISING**.
+
+Step 3 breakdown (means over replicates; ΔTP by `_boundary_labels.jsonl` validity tier, kept separate):
+
+| measure | control | L | Δ |
+|---|---|---|---|
+| TP, `working` tier (CORRECT) | 92.5 | 100.0 | +7.5 |
+| TP, `intent` tier (BROKEN, UNVERIFIABLE) | 20.5 | 23.5 | +3.0 |
+| TP, `not_malicious` tier (WEAK, MISLABELED) | 46.0 | 42.0 | −4.0 |
+| TP, unannotated (most units) | 503.0 | 542.5 | +39.5 |
+| guard FP (`p5-guard-fetch`, 246) | 75.0 | 79.5 | **+4.5 > N_FP 2: FAIL as written** |
+| `EXA-LU1` findings / units | 0 | 213 / 158 | |
+| `EXA-LU4` findings / units | 0 | 164 / 139 | |
+
+**Attribution.** A static finding can turn a unit positive only through that unit's own risk score. So an FP caused by
+L must carry an `EXA-LU*` finding, and so must a TP that L gained.
+- **Benign units with an LU finding:** 2 in total, both `EXA-LU4` and both in the guard:
+  - `skill-security-audit`: FP in the union, TN in r2. It is also FP in control r2. This is the one benign match the
+    offline replay predicted.
+  - `openclaw-skill-vetter`: TN in both replicates.
+
+  L's attributable FP is therefore at most 0.5 per replicate.
+- **The guard rise is LLM noise.** 46 of the 246 guard units change outcome between the two identical controls, and 80
+  change across the four replicates. The controls' total FP matched (214 and 214) by chance, so N_FP sits at its floor
+  of 2, while 257 benign dev units vary across replicates.
+- **Gains with an LU finding:** units FN in both controls and TP in L:
+  - union: 62 such units, 25 of them with an LU finding (LU4 18, LU1 7);
+  - r2: 72 such units, 32 with an LU finding (LU4 23, LU1 9).
+
+  So about 28 of the +46 ΔTP is attributable to L. The rest is drift that favoured the treatment, and it is the same
+  order as N_TP-scale noise. 38–39 malicious units carry an LU finding but stay FN.
+- **Offline prediction against live.** The replay predicted about 58 FN→TP flips on the full set at baseline-v2, and every
+  matched unit is in p5-dev. Live, the attributable gain is 25–32. Two causes are likely:
+  - the units' LLM findings differ from baseline-v2's run to run, and the replay assumed baseline-v2 risk scores;
+  - 38–39 matched FNs stay below 50 even with the finding.
+
+### Decision (Task 3, Step 3)
+
+The `arms` verdict is PROMISING. Under Step 3 ("choose the best PROMISING arm whose guard passes"), however, the guard
+as written fails at +4.5 against N_FP = 2, so no arm qualifies. The per-unit attribution shows the failure measures LLM
+drift on 46+ flipping units, not the rule, which touches 2 guard units and at most 0.5 FP. Overriding a
+pre-registered guard after seeing results is the user's call, as with bar 3 (P5-R16). Task 4 is held for that decision.

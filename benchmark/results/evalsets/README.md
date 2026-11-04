@@ -18,3 +18,11 @@
   - Guard 2 is the 49 benign `%skillinject-clean%` units, 5 FP (ruling P4-R6).
   - Guard 3 is the 90 benign units in `p4-dev.txt` with more than 20 components at `baseline-v2`, 41 FP.
 - `splits.tsv` (regenerated in P4): same command as P2's (`results/evalsets/*-dev.txt`). 3,315 dev, 9,403 holdout.
+- `p5-matched.txt` (305 units): written by `uv run rulelab results/recall.duckdb e16e394f65c3 --patterns-module benchmark.lure_candidates -o results/recall-p5-offline.md --matched-out results/evalsets/p5-matched.txt`. It lists every unit, benign or malicious, matched by an IMPLEMENT rule (EXA-LU1, EXA-LU4).
+- `p5-focus.txt` (1,034 units): `uv run evalset focus results/evalsets/p5-focus.txt --db results/recall.duckdb --run e16e394f65c3 --where "bf.boundary_cluster IN ('C05_msb_wild_usenix','C07_native_wild') OR bf.injection_pattern LIKE '%dropper%' OR bf.injection_pattern LIKE '%installer%' OR e.unit_path IN (SELECT column0 FROM read_csv('<abs path>/p5-matched.txt', header=false, columns={'column0':'VARCHAR'}, delim='\t'))"`.
+  - It has **no cap** (ruling P5-R14). The plan's `--cap 900` would have sampled away 39 of the 305 rule-matched units.
+  - By clause: 691 cluster-only units, 124 dropper/installer and rule-matched, 107 rule-matched only, 74 cluster and rule-matched, and 38 dropper/installer only.
+  - 1,029 of the units are malicious.
+- `p5-dev.txt`: `core-dev.txt` ∪ `p5-focus.txt`, 2,296 units (102 overlap). At `baseline-v2` it holds 1,342 malicious units (TP 646 / FN 696) and 954 benign (FP 203 / TN 751).
+- `p5-guard-fetch.txt` (ruling P5-R8): P5's plan guard. It holds every benign p5-dev unit with any file line matching `\b(curl|wget|iwr|Invoke-WebRequest)\b` (case-insensitive, via `rulelab.match_units`): 246 units, 73 of them FP at `baseline-v2`.
+- `splits.tsv` (regenerated in P5): same command as P2's (`results/evalsets/*-dev.txt`). 4,241 dev, 8,477 holdout.
