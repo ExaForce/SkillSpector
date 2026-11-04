@@ -39,11 +39,35 @@ from dataclasses import dataclass, field
 import click
 from skillspector.nodes.analyzers.static_runner import MAX_FILE_CHARS
 
-# Lines longer than this are blanked before matching, mirroring
-# ``skillspector.exaforce._lure_rules.MAX_LINE_CHARS`` (guards against regex blow-up on
-# untrusted dataset files; a test keeps the two equal).
+# Lines longer than MAX_LINE_CHARS are matched in overlapping windows (one match per line at most)
+# instead of whole, mirroring ``skillspector.exaforce._lure_rules`` (MAX_LINE_CHARS,
+# WINDOW_OVERLAP and the whitespace collapse); a test keeps the constants equal. This guards
+# against regex blow-up on untrusted dataset files without letting padding hide a match.
 MAX_LINE_CHARS = 4096
+WINDOW_OVERLAP = 2048
 _LONG_LINE = re.compile(r"[^\n]{%d,}" % (MAX_LINE_CHARS + 1))
+_WS_RUN = re.compile(r"[^\S\n]{65,}")
+
+
+def _windows(line: str) -> Iterator[str]:
+    line = _WS_RUN.sub(" ", line)
+    step = MAX_LINE_CHARS - WINDOW_OVERLAP
+    for i in range(0, max(len(line) - WINDOW_OVERLAP, 1), step):
+        yield line[i : i + MAX_LINE_CHARS]
+
+
+def _search(pattern: re.Pattern, text: str) -> tuple[re.Match | None, str]:
+    """``pattern.search`` with long lines windowed; returns the match and the text it indexes."""
+    if not _LONG_LINE.search(text):
+        return pattern.search(text), text
+    short = _LONG_LINE.sub("", text)
+    if (m := pattern.search(short)) is not None:
+        return m, short
+    for line in _LONG_LINE.findall(text):
+        for window in _windows(line):
+            if (m := pattern.search(window)) is not None:
+                return m, window
+    return None, text
 from skillspector.nodes.report import _SEVERITY_POINTS
 
 from .dataset_handler.malskillbench import MalSkillBenchHandler
@@ -105,12 +129,11 @@ def _match(
     for unit_path in sorted(found):
         pending = list(patterns)
         for name, text in _unit_files(found[unit_path]):
-            text = _LONG_LINE.sub("", text)
             for rule in list(pending):
-                m = patterns[rule].search(text)
+                m, mtext = _search(patterns[rule], text)
                 if m:
                     matches[rule].add(unit_path)
-                    excerpts[(rule, unit_path)] = f"{name}: {_excerpt(text, m.start(), m.end())}"
+                    excerpts[(rule, unit_path)] = f"{name}: {_excerpt(mtext, m.start(), m.end())}"
                     pending.remove(rule)
             if not pending:
                 break

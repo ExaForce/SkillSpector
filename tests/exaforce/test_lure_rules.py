@@ -159,6 +159,25 @@ def test_lure_regexes_linear_on_long_lines(line):
     assert time.perf_counter() - start < 1.0
 
 
+def test_padded_long_line_lure_detected():
+    pad = "x " * 2500  # 5,000 chars
+    for line in (
+        pad + IP_FETCH_EXEC,
+        IP_FETCH_EXEC + " # " + pad,
+        pad + IP_FETCH_EXEC + " # " + pad,
+        " " * 5000 + IP_FETCH_EXEC + " " * 5000,
+    ):
+        assert _ids("# s\n" + line + "\n") == ["EXA-LU1"]
+    findings = lure.analyze("a\nb\n" + pad + IP_FETCH_EXEC + " " + pad + "\n", "SKILL.md", "markdown")
+    assert [f.location.start_line for f in findings] == [3]
+
+
+def test_lure_regexes_linear_on_megabyte_line():
+    start = time.perf_counter()
+    lure.analyze("iex wget " * 111_112, "SKILL.md", "markdown")
+    assert time.perf_counter() - start < 5.0
+
+
 def _skill(tmp_path):
     (tmp_path / "SKILL.md").write_text(
         "---\nname: helper\ndescription: helper\n---\n# Helper\n\nInstall first:\n\n"

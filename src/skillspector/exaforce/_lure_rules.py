@@ -25,8 +25,9 @@ bypass exists because an attacker can append a code-example indicator (``# e.g.`
 lure line itself in a non-executable file such as ``SKILL.md``, which would otherwise make
 ``is_code_example`` drop the finding.
 
-Regex gaps are bounded (``[^\\n]{0,256}?``) and lines longer than ``MAX_LINE_CHARS`` are blanked
-before matching, so scan time stays near-linear on adversarial single-line input.
+Regex gaps are bounded (``[^\\n]{0,256}?``) and lines longer than ``MAX_LINE_CHARS`` are matched in
+overlapping windows rather than skipped (skipping would let an attacker pad the lure line), so scan
+time stays near-linear on adversarial single-line input.
 """
 
 from __future__ import annotations
@@ -52,12 +53,22 @@ CONTEXT_MARKER = FORK_CONTEXT_PREFIX + "lure] "
 
 CONFIDENCE = 0.9
 MAX_FINDINGS_PER_RULE = 10  # per file
-# Lines longer than this are skipped (blanked, newlines kept so line numbers hold). Bounded gaps
-# alone still leave ~quadratic cost on a very long line; real install commands are far shorter.
-# ``benchmark/benchmark/rulelab.py`` applies the same cap so offline and live agree.
-MAX_LINE_CHARS = 4096
-_LONG_LINE = re.compile(r"[^\n]{%d,}" % (MAX_LINE_CHARS + 1))
 _FLAGS = re.IGNORECASE | re.MULTILINE
+# Lines longer than this are scanned in windows of this many characters. Bounded gaps alone still
+# leave ~quadratic cost on a very long line, so the regexes never see more than one window.
+# ``benchmark/benchmark/rulelab.py`` mirrors these constants so offline and live agree.
+MAX_LINE_CHARS = 4096
+# Consecutive windows overlap by WINDOW_OVERLAP, which must be at least the longest possible
+# match so that a match straddling a window start is wholly inside the previous window. Longest
+# match, from the pattern structure: three ``{0,256}`` gaps (LU1 iex alternative) = 768, plus
+# fixed text (verb, scheme, longest host ``gist.githubusercontent.com`` or a 15-char IPv4,
+# separators, sudo/exec tokens) under ~200, so ~1,000. The only unbounded pieces are whitespace
+# runs and ``sudo`` option chains; whitespace runs over 64 chars are collapsed to one space in
+# long lines before windowing (every pattern accepts a single space wherever it accepts a run).
+# 2048 leaves ample margin.
+WINDOW_OVERLAP = 2048
+_LONG_LINE = re.compile(r"[^\n]{%d,}" % (MAX_LINE_CHARS + 1))
+_WS_RUN = re.compile(r"[^\S\n]{65,}")
 
 # Public, general-purpose paste/snippet services. Never add a host because it appears in the
 # dataset. The EXA-LU1 source below spells this list out (escaped) in each of its host groups.
@@ -180,15 +191,48 @@ def _enabled() -> bool:
     return os.environ.get(LURE_RULES_ENV) == "on"
 
 
+# Cheap per-window necessary conditions (a match needs an IP/paste host for LU1, base64 or
+# powershell for LU4); a window without them cannot match, so skip the regex.
+_HINTS: dict[str, re.Pattern[str]] = {
+    "EXA-LU1": re.compile(
+        r"\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}|" + "|".join(re.escape(h) for h in PASTE_HOSTS),
+        _FLAGS,
+    ),
+    "EXA-LU4": re.compile(r"base64|powershell|pwsh", _FLAGS),
+}
+
+
+def _windows(line: str):
+    """Yield ``MAX_LINE_CHARS``-char windows over a long line, overlapping by WINDOW_OVERLAP."""
+    line = _WS_RUN.sub(" ", line)
+    step = MAX_LINE_CHARS - WINDOW_OVERLAP
+    for i in range(0, max(len(line) - WINDOW_OVERLAP, 1), step):
+        yield line[i : i + MAX_LINE_CHARS]
+
+
+def _long_line_match(rule_id: str, pattern: re.Pattern[str], line: str) -> re.Match[str] | None:
+    """First match of ``pattern`` in any window of one long line (at most one per line)."""
+    hint = _HINTS[rule_id]
+    for window in _windows(line):
+        if hint.search(window) and (m := pattern.search(window)):
+            return m
+    return None
+
+
 def analyze(content: str, file_path: str, file_type: str) -> list[AnalyzerFinding]:
     """Find remote-installer lures (EXA-LU1, EXA-LU4) in one file."""
     findings: list[AnalyzerFinding] = []
-    content = _LONG_LINE.sub("", content)
+    short = _LONG_LINE.sub("", content)  # same newlines, so offsets and line numbers hold
+    long_lines = [(m.start(), m.group(0)) for m in _LONG_LINE.finditer(content)]
     for rule_id, pattern in PATTERNS.items():
-        for count, match in enumerate(pattern.finditer(content)):
+        hits: list[tuple[int, re.Match[str]]] = [(m.start(), m) for m in pattern.finditer(short)]
+        for line_start, line in long_lines:
+            if (m := _long_line_match(rule_id, pattern, line)) is not None:
+                hits.append((line_start, m))
+        hits.sort(key=lambda h: h[0])
+        for count, (start, match) in enumerate(hits):
             if count >= MAX_FINDINGS_PER_RULE:
                 break
-            start = match.start()
             line_no = content.count("\n", 0, start) + 1
             line_start = content.rfind("\n", 0, start) + 1
             line_end = content.find("\n", start)
