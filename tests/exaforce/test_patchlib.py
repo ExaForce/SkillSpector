@@ -5,7 +5,6 @@ from pydantic import BaseModel
 
 from skillspector.exaforce._patchlib import (
     PatchDriftError,
-    intercept_method,
     intercept_module_callable,
     pop_field_validator,
     remove_model_fields,
@@ -94,49 +93,3 @@ def test_intercept_drift_missing_param():
         intercept_module_callable(mod, "f", lambda o, a, k: None, expected_params=("zzz",))
     with pytest.raises(PatchDriftError):
         intercept_module_callable(mod, "missing", lambda o, a, k: None)
-
-
-def _cls():
-    class C:
-        def f(self, a, b=0):
-            return (self, a + b)
-
-    return C
-
-
-def test_intercept_method_sees_self_args_and_can_replace_result():
-    klass = _cls()
-    seen = {}
-
-    def interceptor(original, self, args, kwargs):
-        seen["self"], seen["args"], seen["kwargs"] = self, args, kwargs
-        return original(self, *args, **kwargs)[1] * 10
-
-    intercept_method(klass, "f", interceptor, expected_params=("a", "b"))
-    obj = klass()
-    assert obj.f(1, b=2) == 30
-    assert seen == {"self": obj, "args": (1,), "kwargs": {"b": 2}}
-
-
-def test_intercept_method_is_idempotent():
-    klass = _cls()
-    calls = []
-
-    def interceptor(original, self, args, kwargs):
-        calls.append(1)
-        return original(self, *args, **kwargs)
-
-    intercept_method(klass, "f", interceptor)
-    first = klass.f
-    intercept_method(klass, "f", interceptor)
-    assert klass.f is first
-    klass().f(1)
-    assert calls == [1]
-
-
-def test_intercept_method_drift_missing_param():
-    klass = _cls()
-    with pytest.raises(PatchDriftError):
-        intercept_method(klass, "f", lambda o, s, a, k: None, expected_params=("zzz",))
-    with pytest.raises(PatchDriftError):
-        intercept_method(klass, "missing", lambda o, s, a, k: None)

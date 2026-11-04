@@ -123,43 +123,6 @@ def intercept_module_callable(
     setattr(module, attr, wrapper)
 
 
-def intercept_method(
-    cls: type,
-    name: str,
-    interceptor: Callable[[Callable, object, tuple, dict], object],
-    *,
-    expected_params: tuple[str, ...] = (),
-) -> None:
-    """Replace method ``name`` on ``cls`` with one that sees ``self`` and the call arguments.
-
-    The wrapper calls ``interceptor(original, self, args, kwargs)`` (``args`` and
-    ``kwargs`` exclude ``self``; ``original`` is the unbound function, so call it
-    as ``original(self, *args, **kwargs)``) and returns its result. Same drift
-    guards and idempotence marker as :func:`intercept_module_callable`.
-    """
-    target = getattr(cls, name, None)
-    qual = f"{cls.__module__}.{cls.__qualname__}.{name}"
-    if target is None or not callable(target):
-        raise PatchDriftError(
-            f"{qual} is missing or not callable; upstream changed — update the exaforce patch."
-        )
-    if getattr(target, "_exaforce_wrapped", False):
-        return
-    params = inspect.signature(target).parameters
-    for param in expected_params:
-        if param not in params:
-            raise PatchDriftError(
-                f"{qual} has no parameter {param!r}; upstream changed — update the exaforce patch."
-            )
-
-    @functools.wraps(target)
-    def wrapper(self: object, *args: object, **kwargs: object) -> object:
-        return interceptor(target, self, args, kwargs)
-
-    wrapper._exaforce_wrapped = True  # type: ignore[attr-defined]
-    setattr(cls, name, wrapper)
-
-
 def replace_module_str(module: ModuleType, attr: str, old: str, new: str) -> None:
     """Replace substring ``old`` with ``new`` in module-global ``attr``.
 

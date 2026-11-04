@@ -261,6 +261,10 @@ recall slices use `_boundary_features.jsonl` (`boundary_cluster`) and `_boundary
 - **A human can overrule:** B1 raises dev precision (pooled `arms` values 0.642 → 0.665) while failing 8:1. The spec's full-run acceptance
   test is the arbiter: one full control plus one full `INSTRUCTION_FLOW=on` run, same day, healthy.
 
+- **Rolled back (2026-11-04):** at the user's request all P3 code and tests were removed from the branch (`src/` and
+  `tests/` restored to `25e5baf3`). The flags above no longer exist; this record, the evalsets and the runs in
+  `recall.duckdb` remain. The code is recoverable from commits `434e2290`..`f4f65f36`.
+
 ### Handoffs to P4+
 
 - **Scoring cap on IF1.** One HIGH IF1 contributes at most 25 risk points, and the threshold is 50. Of the 458 malicious units

@@ -8,6 +8,9 @@
 
 So no final full runs were made and no default was changed. Both flags ship committed with their defaults off.
 
+**Rolled back (2026-11-04):** at the user's request the P3 code was removed from the branch (`src/` and `tests/`
+restored to `25e5baf3`; recoverable from commits `434e2290`..`f4f65f36`). This report and the run data remain.
+
 All numbers are dev-set means on `results/evalsets/p3-dev.txt` (2,112 units: 1,078 malicious, 1,034 benign), from
 same-day runs on 2026-11-03. Full-set and holdout numbers do not exist, because the spec's final-acceptance runs are
 made only for PROMISING candidates.

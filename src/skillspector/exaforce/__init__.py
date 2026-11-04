@@ -13,10 +13,8 @@ from __future__ import annotations
 
 from . import (
     _build_context_patches,
-    _context_patches,
     _filter_patches,
     _hidden_text,
-    _instruction_flow,
     _prompt_patches,
     _sampling_patches,
     _schema_patches,
@@ -38,6 +36,4 @@ def apply_patches() -> None:
     _score_patches.apply()
     _build_context_patches.apply()
     _hidden_text.apply()
-    _context_patches.apply()
-    _instruction_flow.apply()
     _PATCHED = True
