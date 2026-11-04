@@ -58,6 +58,31 @@ instructions to skip verification. Precision must hold against documented vendor
   offline results in view. The spec's dev and acceptance rules are unchanged and still decide P5.
 - Plan minimum: +0.5 recall points. Plan guard: FP on benign units containing any `curl|wget|iwr` install line must
   not rise by more than `N_FP`.
+- **Guard and acceptance amended (2026-11-04, user decision, after the Task 3 dev arms; before any Task 4 run).**
+
+  **What the dev arms showed.**
+  - `arms` was PROMISING (+46 TP / +4 FP), but the guard failed as written (+4.5 FP against `N_FP` = 2).
+  - The units the rules match gained +48.5 TP / −0.5 FP. All other units moved −2.5 TP / +4.5 FP. The whole guard
+    rise is in units the rules cannot touch.
+  - All 305 rule-matched units are in the dev split, so the holdout split has none.
+
+  **Why the gates move to affected units.** A static finding changes only the risk score of the unit it fires on.
+  Every whole-set gate therefore measures one run pair's LLM drift on units the candidate cannot affect. So Task 4
+  judges P5 on the affected units, `M` = the units that carry at least one `EXA-LU*` finding in the full treatment run.
+  The full control and full treatment runs are made as Task 4 Step 1 says.
+
+  **ACCEPTED iff all of these hold:**
+  - **Recall:** (TP_treatment − TP_control) over the malicious units of `M`, divided by all malicious units (6,403),
+    is ≥ +0.005.
+  - **Precision and guard:** FP_treatment − FP_control over the benign units of `M` is ≤ `N_FP` = 2 (the dev noise
+    floor).
+  - **Holdout:** if `M` contains holdout units, their ΔTP is ≥ 0. Otherwise the holdout criterion is reported for
+    information only, as whole-split Δrecall, and it is recorded that `M` has no holdout units.
+  - **Health:** both full runs pass `health` (10%).
+
+  Whole-set Δrecall, Δprecision and the fetch-line guard are still reported, beside the `M` measures.
+
+  This is a post-hoc change, made by the user with the dev results in view.
 
 ## Review Focus
 
