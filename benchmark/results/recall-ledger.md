@@ -327,7 +327,7 @@ runs were in progress, so runs record different shas. `src/skillspector/` and th
 `6d093d72`..`71c440f5`; those runs are treated as one tree (P4-R13). B-rev ran on `75f9f822` (the revised prompt).
 
 **Unhealthy replicates (P4-R10, the same rule as P3-R12).** Every full dev run dropped LLM calls in 6.6–9.4% of scans;
-the screen batches dropped 0–13.4%, and 3 of 32 batches were healthy. Controls and A were each replaced once, and the
+the screen batches dropped 4.0–13.4%, and 3 of 32 batches were healthy (≤ 5%). Controls and A were each replaced once, and the
 replacements were also unhealthy, so all four replicates are used. B was not replaced (it fails on FP cost regardless).
 B-rev: both replicates (the screen union and r2) were unhealthy; with two replicates B-rev was +62.0 / +23.5, which passes the numeric rule, so each was replaced once (P4-R17). Both replacements were also unhealthy (9.4%, 7.9%), so all four replicates are used.
 
@@ -335,15 +335,22 @@ B-rev: both replicates (the screen union and r2) were unhealthy; with two replic
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
 | control | 4 | 504.5 | 226.5 | 0.450 | 0.690 | | | 63.0 | 18.0 | 125.8 | 7.2 | 43.8 | 14.7 | 123.4 | 4.39 |
 | A ssd5=on | 4 | 535.0 | 247.0 | 0.477 | 0.684 | +30.5 | +20.5 | 71.5 (+8.5) | 24.8 (+6.8) | 138.2 (+12.5) | 7.0 (-0.2) | 43.5 (-0.2) | 14.2 | 117.8 | 4.39 |
-| B necessity=on | 2 | 583.5 | 274.5 | 0.520 | 0.680 | +79.0 | +48.0 | 80.5 (+17.5) | 24.5 (+6.5) | 155.5 (**+29.8**) | 8.0 (+0.8) | 45.5 (+1.8) | 20.2 | 103.1 | 5.48 |
-| B-rev necessity=on | 4 | 568.0 | 257.0 | 0.506 | 0.688 | +63.5 | +30.5 | 75.0 (+12.0) | 24.0 (+6.0) | 144.2 (+18.5) | 7.2 (+0.0) | 45.5 (+1.8) | 17.2 | 110.2 | 5.47 |
+| B necessity=on | 2 | 583.5 | 274.5 | 0.520 | 0.680 | +79.0 | +48.0 | 80.5 (+17.5) | 24.5 (+6.5) | 155.5 (**+29.8**) | 8.0 (+0.8) | 45.5 (+1.8) | 14.8 | 115.0 | 5.48 |
+| B-rev necessity=on | 4 | 568.0 | 257.0 | 0.506 | 0.688 | +63.5 | +30.5 | 75.0 (+12.0) | 24.0 (+6.0) | 144.2 (+18.5) | 7.2 (+0.0) | 45.5 (+1.8) | 14.9 | 118.9 | 5.47 |
 
 Recall and precision are computed from the arm's mean TP/FP (1,122 malicious, 1,271 benign); they match `arms`. Times are
-pooled `classifications.run_time` over the arm's scans. `domain_contextual` = annotated `label_validity='CORRECT'` units with
+pooled `classifications.run_time` over the arm's full runs only (B: r2; B-rev: r2, r1b, r2b). Screen batch runs are left
+out: their 150-unit batches have a median near 25 s, which is a batch-size effect, not a flag effect. `domain_contextual` = annotated `label_validity='CORRECT'` units with
 `harm_explicitness='domain_contextual'` (81 in p4-dev).
 
 **SSD-5 scope (Review Focus 5):** arm A emitted 441.5 `SSD-5` findings per run, 112.8 of them (25.5%) on files that are not
 markdown or text. The prompt's "natural-language instructions only" scope leaks a quarter of the time.
+
+**SSD-5 and the gate:** `SSD-5` is not in `DEFAULT_GATE_RULES`. It keeps the semantic severity floor (it matches the
+`SSD-` prefix in `LLM_RULE_PREFIXES`) but triggers the block gate only if added to `SKILLSPECTOR_EXA_GATE_RULES`.
+
+**STB / non-STB recall** (spec anti-overfitting rule; per-replicate means; 178 SkillTrustBench and 944 other malicious
+dev units): control 0.841 / 0.376; A 0.841 / 0.408; B 0.871 / 0.454; B-rev 0.860 / 0.440. The gains are mostly non-STB.
 
 `uv run arms` against the four controls (N_TP = 23, N_FP = 27; bar ΔTP ≥ 46, ΔFP ≤ max(27, ΔTP/8)):
 
@@ -353,7 +360,8 @@ markdown or text. The prompt's "natural-language instructions only" scope leaks 
 | B | +79.0 | +48.0 | ΔFP > max(27, 9.9) | **fail** (setup +29.8 > 27) | unhealthy | **REJECT** |
 | B-rev | +63.5 | +30.5 | ΔFP > max(27, 7.9) | pass | unhealthy | **REJECT** |
 
-B-rev sits on the boundary. Its first two replicates gave +62.0 / +23.5 (passes the numeric rule by 3.5 FP), the four give +63.5 / +30.5 (fails it by 3.5 FP). Its four treatment FP totals span 248–271, about the control spread (215–242). The verdict is REJECT either way, because the spec also requires both treatment replicates to pass `health`, and none did.
+B-rev sits on the boundary. Its first two replicates gave +62.0 / +23.5 (ΔFP 3.5 under the bound), the four give +63.5 / +30.5 (3.5 over). The bound is max(N_FP, ΔTP/8) = max(27, 7.9); the N_FP
+noise term binds, so this is a noise-floor miss, not an 8:1 miss. Its four treatment FP totals span 248–271, about the control spread (215–242). The verdict is REJECT either way, because the spec also requires both treatment replicates to pass `health`, and none did.
 
 **Screens.**
 - `p4-B` ran under the first (v1) screen rule and PASSED. That rule did not stop B although B's full-set D was −232.8;
@@ -374,6 +382,10 @@ B-rev sits on the boundary. Its first two replicates gave +62.0 / +23.5 (passes 
 - NE-FNb: hidden PDF text (1/10, P2's territory);
 - NE-FNc: an explicit SKILL.md rule that leaks or slants output was missed (2/10).
 
+Corpora: the sampled unit ids were not recorded, so the sample's own corpora are unknown. The population it was drawn
+from (units that are FP with an `EXA-NE1` finding in either B replicate and not FP in any control) is 31 units: 18
+benign-corpus and 13 SkillTrustBench.
+
 The revision added "output rules count as steps" and four narrow "not findings" exclusions. Result (four replicates): B-rev keeps about 80% of B's ΔTP (+63.5 vs +79) at about 64% of B's ΔFP (+30.5 vs +48);
 dev precision is flat (0.690 → 0.688).
 
@@ -383,11 +395,11 @@ threshold of 50). The Task 2 E2E unit shows the same cap: HIGH 0.9, risk 22, FN.
 ### Decision (Task 3, Step 4)
 
 - **No PROMISING arm**, so Task 4 makes no full runs and changes no default (as P1-R8 and P3). Both flags
-  ship with their defaults off: `SKILLSPECTOR_EXA_SSD5` and `SKILLSPECTOR_EXA_NECESSITY` (`on`). The NE1 prompt in the
+  ship with their defaults off: `SKILLSPECTOR_EXA_SSD5` and `SKILLSPECTOR_EXA_NECESSITY` (enable with `=on`). The NE1 prompt in the
   tree is the measured B-rev text (`75f9f822`).
 - **Overview:** `results/recall-p4-report.md`.
-- **A human can overrule** the health clause (no run today was healthy, controls included), but B-rev also fails the 8:1
-  FP rule on its four replicates, and B fails both the FP rule and the setup guard. Neither is a near miss worth a full run
+- **A human can overrule** the health clause (no run today was healthy, controls included), but B-rev also fails
+  ΔFP ≤ max(N_FP, ΔTP/8) on its four replicates, and B fails both that rule and the setup guard. Neither is a near miss worth a full run
   under the pre-registered rules.
 
 ### Handoffs to P5+
@@ -398,8 +410,17 @@ threshold of 50). The Task 2 E2E unit shows the same cap: HIGH 0.9, risk 22, FN.
 - **NE1's FNs are mostly out of its scope.** 7 of 10 sampled FNs put the harm in a script or config that SKILL.md
   tells the agent to run. A SKILL.md-only analyzer cannot see it.
 - **SSD-5 scope leak:** 25.5% of arm A's `SSD-5` findings land on non-markdown files despite the prompt's scope sentence.
-- **Endpoint health:** 0 of 12 full dev runs and 3 of 32 screen batches passed `health` today (6.6–13.4% dropped). Under
+- **Endpoint health:** 0 of 12 full dev runs and 3 of 32 screen batches passed `health` today (unhealthy ones dropped 5.3–13.4%). Under
   the spec's health clause no candidate could have been PROMISING on 2026-11-04. The threshold, the worker count (96), or
   a retry policy needs a decision before P5 spends endpoint time.
+- **NE1 purpose header is unfenced (security, must fix before any revival).** `_necessity.py` `build_prompt` puts the
+  skill's own `name: description` (or first heading and paragraph, up to 600 characters, attacker-controlled) above the
+  analyzer instructions, outside the file fence. This is the placement P3's handoff warned about. A malicious skill can
+  claim every step is required, and Q1 = yes suppresses every finding. It was left as measured because the flag is
+  rejected and default-off (P4-R18). Fence it (and re-measure) before turning the flag on anywhere. The B-rev
+  "where something is installed or stored" exclusion should be reviewed at the same time.
+- **Deferred code minors (latent; flags off):** `_patchlib.intercept_method` returns early when any interceptor is already
+  installed, so a second, different interceptor on the same method would be dropped silently; `skill_purpose` passes
+  non-string frontmatter values through `str()`; the NE1 chunk budget ignores the ≤600-character purpose header.
 - **Screen v2 in use:** B-rev's screen passed and its full-run verdict was REJECT by 3.5 FP, so the screen behaved as a
   futility screen should (it does not promise PROMISING).

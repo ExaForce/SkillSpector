@@ -26,7 +26,7 @@ per-replicate recalls averaged over replicates.
 
    | slice | control | A | B | B-rev |
    |---|---|---|---|---|
-   | Content Manipulation (249) | 0.252 | 0.286 (+0.034) | 0.322 (+0.070) | 0.300 (+0.048) |
+   | Content Manipulation (250) | 0.252 | 0.286 (+0.034) | 0.322 (+0.070) | 0.300 (+0.048) |
    | Goal Hijacking (234) | 0.595 | 0.594 (−0.001) | 0.620 (+0.025) | 0.626 (+0.031) |
    | Resource Abuse (122) | 0.469 | 0.498 (+0.029) | 0.533 (+0.064) | 0.502 (+0.033) |
    | SkillHarm no-code (182) | 0.124 | 0.151 (+0.027) | 0.173 (+0.049) | 0.169 (+0.045) |
@@ -42,18 +42,22 @@ per-replicate recalls averaged over replicates.
    | 21+ files | 90 | 43.8 | 43.5 (−0.2) | 45.5 (+1.8) | 45.5 (+1.8) |
 
 3. **LLM calls per scan:** control 4.39; A 4.39; B 5.48; B-rev 5.47. SSD-5 rides in the existing SSD call. NE1 adds
-   one call per skill with a root SKILL.md. Median scan time: control 14.7 s; A 14.2 s; B 20.2 s; B-rev 17.2 s.
+   one call per skill with a root SKILL.md. Median scan time over full runs only (screen batch runs
+   excluded; their 150-unit batches run slower for batch-size reasons): control 14.7 s; A 14.2 s; B 14.8 s; B-rev 14.9 s.
+   NE1 adds no measurable median latency.
 4. **Content Manipulation is still the weakest behaviour.** Among behaviours with at least 20 dev units, it has the
    lowest recall in every arm (B-rev 0.300; the next lowest is Persistence at 0.476).
 5. **Why REJECTED** (`arms` against 4 controls, N_TP = 23, N_FP = 27, so ΔTP ≥ 46 and ΔFP ≤ max(27, ΔTP/8)):
    - A: +30.5 TP / +20.5 FP. Below the noise floor.
-   - B: +79.0 TP / +48.0 FP. Fails the 8:1 FP rule and the setup-language guard.
-   - B-rev: +63.5 TP / +30.5 FP. Fails the 8:1 FP rule by 3.5 FP.
+   - B: +79.0 TP / +48.0 FP. Fails ΔFP ≤ max(N_FP, ΔTP/8) = 27 and the setup-language guard.
+   - B-rev: +63.5 TP / +30.5 FP. Fails ΔFP ≤ max(N_FP, ΔTP/8) = 27 by 3.5 FP. The N_FP noise term binds,
+     not the 8:1 term.
    - Every treatment replicate also failed `health`, which the spec requires.
 6. **Caveats:**
    - **No run was healthy.** All 12 full dev runs dropped LLM calls in 6.6–9.4% of scans, and only 3 of 32 screen
-     batches passed. Under the spec's health clause no candidate could be PROMISING on 2026-11-04. All replicates were
-     replaced once and then all were used (P4-R10, P4-R17).
+     batches passed. Under the spec's health clause no candidate could be PROMISING on 2026-11-04. Control, A and B-rev
+     replicates were replaced once, the replacements were also unhealthy, and all were used (P4-R10, P4-R17). B was not
+     replaced, because it fails on FP cost regardless.
    - **B-rev is a boundary case.** On its first two replicates it was +62.0 / +23.5, which passes the numeric rule.
      Its two replacements (both also unhealthy) raised the mean ΔFP to +30.5. Its four FP totals span 248–271, about
      the control spread (215–242). So the numeric part of the verdict is within noise of the bar; the health clause
@@ -65,6 +69,13 @@ per-replicate recalls averaged over replicates.
      SKILL.md tells the agent to run; a SKILL.md-only analyzer sees only "run X".
    - **SSD-5 leaks out of its scope.** 25.5% of arm A's `SSD-5` findings (112.8 of 441.5 per run) land on files that are
      not markdown or text, despite the prompt's natural-language-only sentence (Review Focus 5).
+   - **STB / non-STB recall** (178 SkillTrustBench and 944 other malicious dev units): control 0.841 / 0.376; A 0.841 /
+     0.408; B 0.871 / 0.454; B-rev 0.860 / 0.440. The gains are mostly non-STB. The revision's FP evidence was drawn from
+     31 NE1-caused FP units, 18 benign-corpus and 13 SkillTrustBench. The 10 sampled unit ids were not recorded.
+   - **Security caveat: the NE1 purpose header is unfenced.** The skill's own description (attacker-controlled, up to 600
+     characters) sits above the analyzer instructions, outside the file fence. P3 flagged the same placement. A
+     malicious skill can claim every step is required. It was left as measured because the flag is rejected and off
+     (P4-R18). Fence it and re-measure before enabling NE1 anywhere.
    - **Run provenance.** Other sessions committed harness-only changes while runs were in progress, so runs record
      different shas; `src/` and the scan code are identical across them (P4-R13).
 
