@@ -1,18 +1,26 @@
 """Sequential futility screen: scan a dev set in stratified batches and stop early to reject.
 
 Pre-registered rule (docs/superpowers/specs/2026-10-29-recall-improvement-program.md,
-"Decision rules"; keep in sync, do not tune here). After each batch, treatment is paired
-with same-day control on every unit judged so far:
+"Sequential futility screen"; keep in sync, do not tune here). After each batch, treatment is
+paired with same-day control on every unit judged so far (``n`` of the ``N`` units of the units
+file). ``tp``/``fp`` are a unit's TP/FP indicators, averaged over the runs on that side that hold
+it; a unit that is ERROR in any run on either side is left out and counted apart.
 
-- recall kind: ``d_i = (tp_t - tp_c) - 8·(fp_t - fp_c)``, allowance ``16·n/N``;
-- fp kind:     ``d_i = 2·(tp_t - tp_c) - (fp_t - fp_c)``, allowance 0;
-- ``D = Σ d_i``, ``SE = sd(d, ddof=1)·sqrt(n)`` (0 when n < 2);
-- FUTILE iff at least 3 batches are in and ``D + 2.8·SE < -allowance``. It never stops
-  for success: a candidate that passes goes on to the standard dev verdict (``arms``).
+- recall kind (v2, amended 2026-11-04): per judged unit ``dtp = tp_t - tp_c``,
+  ``dfp = fp_t - fp_c`` and ``g = dtp - 8·dfp``. For x in {dtp, dfp, g}, the final verdict's
+  dev-set total is projected as ``F_x = N·mean(x)`` with
+  ``SD_x = sd(x, ddof=1)·½·(sqrt(N(N-n)/n) + sqrt(N(N+n)/n))`` (n/a when n < 2). FUTILE iff
+  at least 3 batches are in and either
+  - (TP) ``F_dtp + 2.8·SD_dtp < 2·N_TP``, or
+  - (FP) ``F_g + 2.8·SD_g < 0`` and ``F_dfp - 2.8·SD_dfp > N_FP``.
+  ``N_TP``/``N_FP`` are ``arms``' noise floors from the reused control runs when they hold at
+  least 2 replicates (totals restricted to the units file), else the floors 3 and 2.
+- fp kind (v1): ``d_i = 2·(tp_t - tp_c) - (fp_t - fp_c)``, ``D = Σ d_i``,
+  ``SE = sd(d, ddof=1)·sqrt(n)`` (0 when n < 2); FUTILE iff at least 3 batches are in and
+  ``D + 2.8·SE < 0``.
 
-``tp``/``fp`` are a unit's TP/FP indicators, averaged over the runs on that side that hold
-it; a unit that is ERROR in any run on either side is left out of ``d`` and counted apart.
-``n`` is the number of units in ``d`` and ``N`` the size of the units file.
+It never stops for success: a candidate that passes goes on to the standard dev verdict
+(``arms``).
 
 Scans run the ``benchmark`` command as a subprocess, one run per batch and arm, so scan
 semantics stay in one place. A scan whose log stops growing for ``--stall-seconds`` is
@@ -37,7 +45,7 @@ from statistics import mean, stdev
 
 import click
 
-from .arms import FP_FLOOR, RECALL_FP_PER_TP, parse_replicates
+from .arms import FP_FLOOR, RECALL_FP_PER_TP, TP_FLOOR, noise_floors, parse_replicates
 from .main import read_units_file
 
 BATCH_SIZE = 150
@@ -45,7 +53,6 @@ SEED = 29
 Z = 2.8
 MIN_BATCHES = 3
 FP_WEIGHT = RECALL_FP_PER_TP  # 8: the spec's 8:1 rule
-ALLOWANCE = RECALL_FP_PER_TP * FP_FLOOR  # 16: the N_FP >= 2 floor, scaled by n/N
 FP_KIND_TP_WEIGHT = 2  # fp kind: -dTP <= (-dFP)/2, i.e. 2·dTP - dFP >= 0
 MAX_RESUMES = 2
 
@@ -125,6 +132,8 @@ def unit_outcomes(
 
 @dataclass
 class Look:
+    """One fp-kind look (v1 rule)."""
+
     batch: int
     n: int  # units in D: judged on both sides, not errored
     n_errors: int  # units left out because a run on either side was ERROR
@@ -137,6 +146,61 @@ class Look:
     stop: bool
 
 
+@dataclass
+class RecallLook:
+    """One recall-kind look (v2 rule). Projections are None when n is 0, SDs and bounds when
+    n < 2."""
+
+    batch: int
+    n: int  # judged units: on both sides, not errored
+    n_errors: int  # units left out because a run on either side was ERROR
+    d_tp: float  # Σ dtp over judged units
+    d_fp: float  # Σ dfp over judged units
+    n_tp: int
+    n_fp: int
+    f_dtp: float | None
+    sd_dtp: float | None
+    f_g: float | None
+    sd_g: float | None
+    f_dfp: float | None
+    sd_dfp: float | None
+    tp_ucb: float | None  # F_dtp + z·SD_dtp; TP clause: < 2·N_TP
+    g_ucb: float | None  # F_g + z·SD_g; FP clause: < 0 ...
+    fp_lcb: float | None  # F_dfp - z·SD_dfp; ... and > N_FP
+    clause: str | None  # "TP", "FP", "TP+FP": the clauses crossed at this look, else None
+    stop: bool  # crossed, and at least min_batches batches are in
+
+
+def _pairs(control, treatment, units):
+    """``(dtp, dfp)`` per judged unit, and the number of units left out as ERROR."""
+    out: list[tuple[float, float]] = []
+    n_errors = 0
+    for u in units:
+        c, t = control.get(u), treatment.get(u)
+        if c is None or t is None:
+            continue
+        if c[2] or t[2]:
+            n_errors += 1
+            continue
+        out.append((t[0] - c[0], t[1] - c[1]))
+    return out, n_errors
+
+
+def _project(xs: list[float], n_total: int) -> tuple[float | None, float | None]:
+    """``(F, SD)`` of the final dev-set total from the judged units' ``xs`` (see the docstring)."""
+    n = len(xs)
+    if n == 0:
+        return None, None
+    if n > n_total:
+        raise ValueError(f"{n} judged units exceed the {n_total} units of the units file")
+    f = n_total * mean(xs)
+    if n < 2:
+        return f, None
+    big_n = n_total
+    factor = 0.5 * (math.sqrt(big_n * (big_n - n) / n) + math.sqrt(big_n * (big_n + n) / n))
+    return f, stdev(xs) * factor
+
+
 def judge(
     control: dict[str, tuple[float, float, bool]],
     treatment: dict[str, tuple[float, float, bool]],
@@ -147,29 +211,58 @@ def judge(
     batch: int,
     min_batches: int = MIN_BATCHES,
     kind: str = "recall",
-) -> Look:
-    """One look over ``units`` (every unit scanned so far); see the module docstring."""
+    n_tp: int | None = None,
+    n_fp: int | None = None,
+) -> Look | RecallLook:
+    """One look over ``units`` (every unit scanned so far); see the module docstring.
+    ``n_tp``/``n_fp`` (the noise floors) are required for the recall kind."""
     if kind not in ("recall", "fp"):
         raise ValueError(f"unknown kind {kind!r}")
-    ds: list[float] = []
-    d_tp = d_fp = 0.0
-    n_errors = 0
-    for u in units:
-        c, t = control.get(u), treatment.get(u)
-        if c is None or t is None:
-            continue
-        if c[2] or t[2]:
-            n_errors += 1
-            continue
-        dtp, dfp = t[0] - c[0], t[1] - c[1]
-        d_tp += dtp
-        d_fp += dfp
-        ds.append(dtp - FP_WEIGHT * dfp if kind == "recall" else FP_KIND_TP_WEIGHT * dtp - dfp)
-    n = len(ds)
+    pairs, n_errors = _pairs(control, treatment, units)
+    d_tp = float(sum(p[0] for p in pairs))
+    d_fp = float(sum(p[1] for p in pairs))
+    n = len(pairs)
+    if kind == "recall":
+        if n_tp is None or n_fp is None:
+            raise ValueError("the recall kind needs n_tp and n_fp")
+        f_dtp, sd_dtp = _project([p[0] for p in pairs], n_total)
+        f_g, sd_g = _project([p[0] - FP_WEIGHT * p[1] for p in pairs], n_total)
+        f_dfp, sd_dfp = _project([p[1] for p in pairs], n_total)
+        tp_ucb = g_ucb = fp_lcb = None
+        clauses = []
+        if n >= 2:
+            tp_ucb = f_dtp + z * sd_dtp
+            g_ucb = f_g + z * sd_g
+            fp_lcb = f_dfp - z * sd_dfp
+            if tp_ucb < 2 * n_tp:
+                clauses.append("TP")
+            if g_ucb < 0 and fp_lcb > n_fp:
+                clauses.append("FP")
+        clause = "+".join(clauses) or None
+        return RecallLook(
+            batch=batch,
+            n=n,
+            n_errors=n_errors,
+            d_tp=d_tp,
+            d_fp=d_fp,
+            n_tp=n_tp,
+            n_fp=n_fp,
+            f_dtp=f_dtp,
+            sd_dtp=sd_dtp,
+            f_g=f_g,
+            sd_g=sd_g,
+            f_dfp=f_dfp,
+            sd_dfp=sd_dfp,
+            tp_ucb=tp_ucb,
+            g_ucb=g_ucb,
+            fp_lcb=fp_lcb,
+            clause=clause,
+            stop=batch >= min_batches and clause is not None,
+        )
+    ds = [FP_KIND_TP_WEIGHT * dtp - dfp for dtp, dfp in pairs]
     total = float(sum(ds))
     se = stdev(ds) * math.sqrt(n) if n >= 2 else 0.0
     ucb = total + z * se
-    allowance = ALLOWANCE * n / n_total if kind == "recall" else 0.0
     return Look(
         batch=batch,
         n=n,
@@ -179,8 +272,8 @@ def judge(
         D=total,
         se=se,
         ucb=ucb,
-        allowance=allowance,
-        stop=batch >= min_batches and ucb < -allowance,
+        allowance=0.0,
+        stop=batch >= min_batches and ucb < 0,
     )
 
 
@@ -194,21 +287,60 @@ def simulate(
     z: float = Z,
     min_batches: int = MIN_BATCHES,
     kind: str = "recall",
-) -> list[Look]:
+    n_tp: int | None = None,
+    n_fp: int | None = None,
+) -> list[Look | RecallLook]:
     """Looks of a screen replayed on existing full runs, up to and including the first stop."""
     units = [u for b in batches for u in b]
     control = unit_outcomes(con, control_ids, units)
     treatment = unit_outcomes(con, treatment_ids, units)
-    looks: list[Look] = []
+    looks: list[Look | RecallLook] = []
     seen: list[str] = []
     for k, b in enumerate(batches, 1):
         seen += b
         looks.append(
-            judge(control, treatment, seen, n_total, z, batch=k, min_batches=min_batches, kind=kind)
+            judge(
+                control,
+                treatment,
+                seen,
+                n_total,
+                z,
+                batch=k,
+                min_batches=min_batches,
+                kind=kind,
+                n_tp=n_tp,
+                n_fp=n_fp,
+            )
         )
         if looks[-1].stop:
             break
     return looks
+
+
+def _replicate_totals(con, rep: list[str], units: list[str]) -> tuple[int, int]:
+    """A replicate's TP and FP totals over ``units`` (sums over its member runs)."""
+    wanted = set(units)
+    rows = con.execute(
+        "SELECT unit_path, outcome FROM evaluation"
+        f" WHERE run_id IN ({', '.join('?' * len(rep))}) AND outcome IN ('TP', 'FP')",
+        list(rep),
+    ).fetchall()
+    tp = sum(1 for u, o in rows if o == "TP" and u in wanted)
+    fp = sum(1 for u, o in rows if o == "FP" and u in wanted)
+    return tp, fp
+
+
+def noise_floors_for(con, control_runs: str | None, units: list[str]) -> tuple[int, int, str]:
+    """``(N_TP, N_FP, source)`` for the recall kind: ``arms``' noise floors over the reused
+    control replicates when there are at least 2 (totals restricted to ``units``), else the
+    floors ``TP_FLOOR``/``FP_FLOOR``."""
+    reps = parse_replicates(control_runs or "")
+    if len(reps) >= 2:
+        totals = [_replicate_totals(con, rep, units) for rep in reps]
+        n_tp, n_fp = noise_floors([t for t, _ in totals], [f for _, f in totals])
+        return n_tp, n_fp, f"range over {len(reps)} reused control replicates"
+    why = "1 control replicate" if reps else "per-batch control"
+    return TP_FLOOR, FP_FLOOR, f"floors: {why}"
 
 
 def uncovered(con, run_ids: list[str], units: list[str]) -> int:
@@ -246,8 +378,14 @@ def provenance_warnings(con, control_ids: list[str], treatment_ids: list[str]) -
     return out
 
 
-def render_table(looks: list[Look], scanned: list[int], z: float = Z) -> str:
+def _num(x: float | None, fmt: str) -> str:
+    return "n/a" if x is None else format(x, fmt)
+
+
+def render_table(looks: list[Look] | list[RecallLook], scanned: list[int], z: float = Z) -> str:
     """Markdown table, one row per look; ``scanned[i]`` is the units scanned by look i."""
+    if looks and isinstance(looks[0], RecallLook):
+        return _render_recall(looks, scanned, z)
     out = [
         f"| batch | units scanned | n judged | errors | dTP | dFP | D | SE | D+{z:g}·SE"
         " | -allowance | stop |",
@@ -258,6 +396,24 @@ def render_table(looks: list[Look], scanned: list[int], z: float = Z) -> str:
             f"| {look.batch} | {m} | {look.n} | {look.n_errors} | {look.d_tp:+.1f} |"
             f" {look.d_fp:+.1f} | {look.D:+.1f} | {look.se:.2f} | {look.ucb:+.2f} |"
             f" {-look.allowance:.2f} | {'FUTILE' if look.stop else 'no'} |"
+        )
+    return "\n".join(out)
+
+
+def _render_recall(looks: list[RecallLook], scanned: list[int], z: float) -> str:
+    n_tp, n_fp = looks[0].n_tp, looks[0].n_fp
+    out = [
+        f"| batch | units scanned | n judged | errors | dTP | dFP | F_dTP ± SD"
+        f" | F_dTP+{z:g}·SD (TP: < 2·N_TP = {2 * n_tp}) | F_g+{z:g}·SD_g (FP: < 0)"
+        f" | F_dFP-{z:g}·SD (FP: > N_FP = {n_fp}) | stop |",
+        "|---|---|---|---|---|---|---|---|---|---|---|",
+    ]
+    for look, m in zip(looks, scanned, strict=True):
+        out.append(
+            f"| {look.batch} | {m} | {look.n} | {look.n_errors} | {look.d_tp:+.1f} |"
+            f" {look.d_fp:+.1f} | {_num(look.f_dtp, '+.1f')} ± {_num(look.sd_dtp, '.1f')} |"
+            f" {_num(look.tp_ucb, '+.1f')} | {_num(look.g_ucb, '+.1f')} |"
+            f" {_num(look.fp_lcb, '+.1f')} | {f'FUTILE ({look.clause})' if look.stop else 'no'} |"
         )
     return "\n".join(out)
 
@@ -419,7 +575,7 @@ def _open(db: str):
     return duckdb.connect(db, read_only=True)
 
 
-def _finish(stopped: Look | None, batches: list[list[str]], n_total: int) -> None:
+def _finish(stopped: Look | RecallLook | None, batches: list[list[str]], n_total: int) -> None:
     if stopped:
         click.echo(
             f"SCREEN: FUTILE at batch {stopped.batch}"
@@ -490,6 +646,9 @@ def main(
         if not con.execute("SELECT 1 FROM runs WHERE run_id = ?", [ref_run]).fetchone():
             raise SystemExit(f"unknown --ref-run {ref_run}")
         batches = build_batches(units, strata_for(con, ref_run, units), batch_size, seed)
+        n_tp = n_fp = noise_source = None
+        if kind == "recall":
+            n_tp, n_fp, noise_source = noise_floors_for(con, control_runs, units)
         extra_warning = None
         if control_ids:
             _refuse_uncovered(con, "control", control_ids, batches)
@@ -513,13 +672,16 @@ def main(
                 z=z,
                 min_batches=min_batches,
                 kind=kind,
+                n_tp=n_tp,
+                n_fp=n_fp,
             )
     finally:
         con.close()
 
+    floors = f"; N_TP={n_tp}, N_FP={n_fp} ({noise_source})" if kind == "recall" else ""
     click.echo(
         f"screen {label} ({kind}): {n_total} units in {len(batches)} batches"
-        f" of <= {batch_size} (seed {seed}, z {z:g}, min batches {min_batches})"
+        f" of <= {batch_size} (seed {seed}, z {z:g}, min batches {min_batches}){floors}"
     )
     if extra_warning:
         click.echo(f"WARNING: {extra_warning}")
@@ -545,6 +707,9 @@ def main(
             env={"control": _parse_env(control_env), "treatment": _parse_env(treatment_env)},
             z=z,
             min_batches=min_batches,
+            n_tp=n_tp,
+            n_fp=n_fp,
+            noise_source=noise_source,
             stall_seconds=stall_seconds,
             auth_wait_seconds=auth_wait_seconds,
             screen_dir=pathlib.Path(out_dir) / _slug(label),
@@ -570,6 +735,9 @@ def _run_screen(
     env: dict[str, dict[str, str]],
     z: float,
     min_batches: int,
+    n_tp: int | None,
+    n_fp: int | None,
+    noise_source: str | None,
     stall_seconds: float,
     auth_wait_seconds: float,
     screen_dir: pathlib.Path,
@@ -588,6 +756,9 @@ def _run_screen(
         "n_total": n_total,
         "z": z,
         "min_batches": min_batches,
+        "n_tp": n_tp,
+        "n_fp": n_fp,
+        "noise_floors": noise_source,
         "control_runs": control_runs,
         "env": env,
         "batches": [],
@@ -641,7 +812,8 @@ def _run_screen(
     batch_controls: list[str] = []
     treatments: list[str] = []
     seen: list[str] = []
-    stopped: Look | None = None
+    stopped: Look | RecallLook | None = None
+    look_cls = RecallLook if kind == "recall" else Look
     for k, b in enumerate(batches, 1):
         entry = manifest["batches"][k - 1]
         if control_runs:
@@ -666,6 +838,8 @@ def _run_screen(
                 batch=k,
                 min_batches=min_batches,
                 kind=kind,
+                n_tp=n_tp,
+                n_fp=n_fp,
             )
             for w in provenance_warnings(con, c_ids, treatments):
                 if w not in manifest["warnings"]:
@@ -675,7 +849,7 @@ def _run_screen(
             con.close()
         manifest["looks"].append(asdict(look))
         save()
-        looks = [Look(**x) for x in manifest["looks"]]
+        looks = [look_cls(**x) for x in manifest["looks"]]
         click.echo(render_table(looks, _scanned(batches, k), z))
         if look.stop:
             stopped = look

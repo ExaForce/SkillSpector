@@ -15,7 +15,7 @@ from typing import Literal
 
 import click
 
-from .health import check_health
+from .health import check_health_pooled
 from .report.extras import load_extras
 
 TP_FLOOR = 3
@@ -90,6 +90,12 @@ def _rep_counts(con, rep: Replicate) -> dict[str, int]:
     """A replicate's TP/FP/FN/TN: the sums over its member runs."""
     cs = [_counts(con, r) for r in _members(rep)]
     return {k: sum(c[k] for c in cs) for k in ("TP", "FP", "FN", "TN")}
+
+
+def noise_floors(tps: list[int], fps: list[int]) -> tuple[int, int]:
+    """``(N_TP, N_FP)`` from the control replicates' TP and FP totals: their range, floored at
+    ``TP_FLOOR``/``FP_FLOOR`` (so one replicate gives the floors)."""
+    return max(TP_FLOOR, max(tps) - min(tps)), max(FP_FLOOR, max(fps) - min(fps))
 
 
 def _check_runs(con, control: list[Replicate], treatment: list[Replicate]) -> None:
@@ -196,9 +202,7 @@ def compare_arms(
         return {k: mean(c[k] for c in cs) for k in ("TP", "FP", "FN", "TN")}
 
     cm, tm = arm_mean(cc), arm_mean(tc)
-    tps, fps = [c["TP"] for c in cc], [c["FP"] for c in cc]
-    n_tp = max(TP_FLOOR, max(tps) - min(tps))
-    n_fp = max(FP_FLOOR, max(fps) - min(fps))
+    n_tp, n_fp = noise_floors([c["TP"] for c in cc], [c["FP"] for c in cc])
     d_tp = tm["TP"] - cm["TP"]
     d_fp = tm["FP"] - cm["FP"]
     att = (_mean_attributed(con, control), _mean_attributed(con, treatment))
@@ -225,10 +229,17 @@ def compare_arms(
                 f"dFP {d_fp:+.1f} > max(N_FP={n_fp}, dTP/8={d_tp / RECALL_FP_PER_TP:.2f})"
                 f" = {allowed:.2f}: FP cost exceeds 8:1 extra TPs per extra FP"
             )
-        for r in (m for rep in treatment for m in _members(rep)):
-            problems = check_health(con, r)
+        for rep in treatment:
+            # a union replicate stands in for one full run, so it is judged pooled, as one
+            members = _members(rep)
+            problems = check_health_pooled(con, members)
             if problems:
-                fail(f"treatment run {r} failed health: {'; '.join(problems)}")
+                who = (
+                    f"treatment run {members[0]}"
+                    if len(members) == 1
+                    else f"treatment replicate {_label(rep)} (pooled over {', '.join(members)})"
+                )
+                fail(f"{who} failed health: {'; '.join(problems)}")
         if att[0] is None or att[1] is None:
             reasons.append("attributed recall n/a (labels missing); not a recall-kind condition")
     else:

@@ -9,7 +9,8 @@ import click
 import pytest
 from test_db import _fresh_db
 
-from benchmark.arms import compare_arms, parse_replicates, render_markdown
+from benchmark.arms import compare_arms, noise_floors, parse_replicates, render_markdown
+from benchmark.health import check_health
 
 N_MAL, N_BEN = 130, 20
 
@@ -269,12 +270,59 @@ def test_union_counts_sum():
     assert {"t1", "t2"} <= {p.run_id for p in r.provenance}
 
 
-def test_union_health_requires_all_members():
+def _error_union_db(sizes, errors):
+    """Control c over m0..m(total-1) vs a union t1+t2.. of consecutive slices of ``sizes``,
+    member k with its first ``errors[k]`` units ERROR."""
+    con = _fresh_db()
+    total = sum(sizes)
+    _half(con, "c", total, 0, range(total), range(0))
+    start = 0
+    for k, (size, err) in enumerate(zip(sizes, errors, strict=True), 1):
+        rid = f"t{k}"
+        _half(con, rid, total, 0, range(start, start + size), range(0))
+        for i in range(start, start + err):
+            con.execute(
+                "UPDATE classifications SET status = 'Error' WHERE run_id = ? AND unit_path = ?",
+                [rid, f"m{i}"],
+            )
+        start += size
+    return con
+
+
+def test_union_health_is_pooled_two_percent_each_fails():
+    con = _error_union_db([100, 100], [2, 2])
+    assert check_health(con, "t1") and check_health(con, "t2")  # 2% each
+    r = compare_arms(con, ["c"], [["t1", "t2"]])
+    bad = [x for x in r.reasons if "health" in x]
+    assert len(bad) == 1, r.reasons  # reported once per replicate
+    assert "t1+t2" in bad[0] and "t1, t2" in bad[0]
+    assert "ERROR outcomes in 2.0% of scans (4/200)" in bad[0]
+    assert r.verdict == "REJECT"
+
+
+def test_union_health_is_pooled_small_member_error_passes():
+    con = _error_union_db([50, 150], [1, 0])
+    assert check_health(con, "t1")  # 1/50 = 2%: the old per-member rule would fail the union
+    r = compare_arms(con, ["c"], [["t1", "t2"]])
+    assert not [x for x in r.reasons if "health" in x], r.reasons  # pooled 1/200 = 0.5%
+
+
+def test_union_health_gross_member_failure_still_rejects():
     con = _union_db()
     con.execute("UPDATE classifications SET status = 'Error' WHERE run_id = 't2'")
     r = compare_arms(con, ["c"], [["t1", "t2"]])
     assert r.verdict == "REJECT"
-    assert any("t2" in x and "health" in x for x in r.reasons)
+    assert any("t1+t2" in x and "health" in x for x in r.reasons)
+
+
+def test_single_run_health_message_unchanged():
+    con = _fresh_db()
+    for rid, tp in (("c1", 100), ("c2", 102), ("t1", 112)):
+        _run(con, rid, tp, 5)
+    con.execute("UPDATE classifications SET status = 'Error' WHERE run_id = 't1'")
+    r = compare_arms(con, ["c1", "c2"], ["t1"])
+    want = f"treatment run t1 failed health: {'; '.join(check_health(con, 't1'))}"
+    assert want in r.reasons
 
 
 def test_union_overlap_refused():
@@ -308,3 +356,9 @@ def test_union_attributed_pools_members(tmp_path):
     r = compare_arms(con, ["c"], [["t1", "t2"]], kind="fp")
     # pooled: (60 + 35) attributed TPs over 100 injected units judged
     assert r.attributed_recall[1] == pytest.approx(0.95)
+
+
+def test_noise_floors_formula():
+    assert noise_floors([100], [5]) == (3, 2)
+    assert noise_floors([100, 102], [5, 6]) == (3, 2)
+    assert noise_floors([100, 110, 105], [5, 20]) == (10, 15)

@@ -12,28 +12,44 @@ SEMANTIC_PREFIXES = ("SSD-", "SDI-", "SQP-")
 
 def check_health(con, run_id: str) -> list[str]:
     """Return problems found in ``run_id`` (empty list = healthy)."""
-    row = con.execute("SELECT use_llm FROM runs WHERE run_id = ?", [run_id]).fetchone()
-    if row is None:
-        raise KeyError(run_id)
-    use_llm = bool(row[0])
+    return check_health_pooled(con, [run_id])
+
+
+def check_health_pooled(con, run_ids: list[str]) -> list[str]:
+    """Problems of ``run_ids`` judged as one run (a union replicate): scans, dropped calls and
+    errors summed, semantic issues counted over all of them, the median run_time over all
+    their scans, and the LLM checks applied if any of them used the LLM. Raises ``KeyError``
+    naming the first unknown run."""
+    if not run_ids:
+        raise ValueError("no run ids")
+    marks = ", ".join("?" * len(run_ids))
+    use = dict(
+        con.execute(
+            f"SELECT run_id, use_llm FROM runs WHERE run_id IN ({marks})", run_ids
+        ).fetchall()
+    )
+    for r in run_ids:
+        if r not in use:
+            raise KeyError(r)
+    use_llm = any(bool(use[r]) for r in run_ids)
 
     total, dropped, run_times_n, median = con.execute(
         "SELECT count(*),"
         " count(*) FILTER (WHERE llm_calls_succeeded < llm_calls_attempted),"
         " count(run_time), median(run_time)"
-        " FROM classifications WHERE run_id = ?",
-        [run_id],
+        f" FROM classifications WHERE run_id IN ({marks})",
+        run_ids,
     ).fetchone()
     if total == 0:
-        return ["no scans recorded for this run"]
+        return ["no scans recorded for " + ("this run" if len(run_ids) == 1 else "these runs")]
 
     problems: list[str] = []
     if use_llm:
         (n_sem,) = con.execute(
-            "SELECT count(*) FROM issues WHERE run_id = ?"
+            f"SELECT count(*) FROM issues WHERE run_id IN ({marks})"
             " AND (starts_with(rule_id, 'SSD-') OR starts_with(rule_id, 'SDI-')"
             " OR starts_with(rule_id, 'SQP-'))",
-            [run_id],
+            run_ids,
         ).fetchone()
         if n_sem == 0:
             problems.append("LLM run has no SSD-/SDI-/SQP- issues (semantic rules never fired)")
@@ -45,7 +61,8 @@ def check_health(con, run_id: str) -> list[str]:
         )
 
     (errors,) = con.execute(
-        "SELECT count(*) FROM evaluation WHERE run_id = ? AND outcome = 'ERROR'", [run_id]
+        f"SELECT count(*) FROM evaluation WHERE run_id IN ({marks}) AND outcome = 'ERROR'",
+        run_ids,
     ).fetchone()
     if errors / total > MAX_ERROR_FRACTION:
         problems.append(

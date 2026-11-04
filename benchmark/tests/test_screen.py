@@ -265,11 +265,8 @@ def test_unit_outcomes_means_and_errors():
     assert got == {"m": (0.5, 0.0, False), "b": (0.0, 1.0, False), "e": (0.0, 0.0, True)}
 
 
-# Hand-computed 6-unit example. Units u1-u5 are benign and gain an FP; u6 is a steady TP.
-#   recall: d = [-8]*5 + [0] -> D = -40, mean = -20/3,
-#           sum sq dev = 5*(4/3)^2 + (20/3)^2 = 80/9 + 400/9 = 480/9,
-#           var = (480/9)/5 = 32/3, SE = sqrt(32/3 * 6) = sqrt(64) = 8,
-#           D + 2.8*SE = -17.6, allowance = 16*6/6 = 16 -> -17.6 < -16 -> stop (batch >= 3).
+# Hand-computed fp-kind example (v1 fp rule). Units u1-u5 are benign and gain an FP; u6 is a
+# steady TP.
 #   fp:     d = 2*dTP - dFP = [-1]*5 + [0] -> D = -5, mean = -5/6,
 #           sum sq dev = 5*(1/6)^2 + (5/6)^2 = 5/6, var = 1/6, SE = sqrt(1/6 * 6) = 1,
 #           D + 2.8*SE = -2.2 < 0 (allowance 0) -> stop.
@@ -278,20 +275,7 @@ _T6 = {f"u{i}": (0.0, 1.0, False) for i in range(1, 6)} | {"u6": (1.0, 0.0, Fals
 _U6 = [f"u{i}" for i in range(1, 7)]
 
 
-def test_judge_formula():
-    look = judge(_C6, _T6, _U6, 6, batch=3)
-    assert (look.n, look.n_errors, look.d_tp, look.d_fp) == (6, 0, 0, 5)
-    assert look.D == -40
-    assert look.se == pytest.approx(8.0)
-    assert look.ucb == pytest.approx(-17.6)
-    assert look.allowance == pytest.approx(16.0)
-    assert look.stop is True
-    assert judge(_C6, _T6, _U6, 6, batch=2).stop is False  # fewer than min_batches
-    # allowance scales with n/N: 16*6/600
-    assert judge(_C6, _T6, _U6, 600, batch=3).allowance == pytest.approx(0.16)
-    # a wider z clears the allowance: -40 + 3.1*8 = -15.2, not < -16
-    assert judge(_C6, _T6, _U6, 6, z=3.1, batch=3).stop is False
-
+def test_judge_formula_fp_kind():
     fp = judge(_C6, _T6, _U6, 6, batch=3, kind="fp")
     assert fp.D == -5
     assert fp.se == pytest.approx(1.0)
@@ -299,67 +283,158 @@ def test_judge_formula():
     assert fp.allowance == 0
     assert fp.stop is True
 
-    # mixed example: recall d = [1, 1, 0, -8, 0, -1]; fp-kind d = [2, 2, 0, -1, 0, -2]
+    # mixed example: fp-kind d = [2, 2, 0, -1, 0, -2]
     c = {"a": (0, 0, False), "b": (0, 0, False), "c": (1, 0, False)}
     c |= {"d": (0, 0, False), "e": (0, 0, False), "f": (1, 0, False)}
     t = {"a": (1, 0, False), "b": (1, 0, False), "c": (1, 0, False)}
     t |= {"d": (0, 1, False), "e": (0, 0, False), "f": (0, 0, False)}
-    mixed = judge(c, t, list("abcdef"), 600, batch=5)
-    assert mixed.D == -7
-    assert mixed.se == pytest.approx(math.sqrt(70.6))  # var = (67 - 49/6)/5 = 11.7667; *6
-    assert mixed.stop is False
     mixed_fp = judge(c, t, list("abcdef"), 600, batch=5, kind="fp")
     assert mixed_fp.D == 1
     assert mixed_fp.se == pytest.approx(math.sqrt(15.4))  # var = (13 - 1/6)/5; *6
     assert mixed_fp.stop is False
 
 
-def test_judge_single_unit_has_zero_se():
-    look = judge({"a": (0, 0, False)}, {"a": (0, 1, False)}, ["a"], 10, batch=3)
-    assert (look.n, look.D, look.se) == (1, -8, 0.0)
+# Recall kind (v2). n = 9 judged units of N = 12, so the SD factor is
+#   K = 1/2 * (sqrt(N(N-n)/n) + sqrt(N(N+n)/n)) = 1/2 * (sqrt(4) + sqrt(28)) = 1 + sqrt(7).
+_K = 1 + math.sqrt(7)
+_U9 = [f"u{i}" for i in range(9)]
+_C9 = dict.fromkeys(_U9, (0.0, 0.0, False))
+
+
+def test_judge_recall_tp_clause():
+    # dtp = [1, 0 x 8], dfp = 0: mean 1/9, sum sq dev = (8/9)^2 + 8*(1/9)^2 = 8/9,
+    # var = (8/9)/8 = 1/9, sd = 1/3.  F_dtp = 12/9 = 4/3, SD_dtp = K/3,
+    # F_dtp + 2.8*SD_dtp = 4/3 + 2.8*K/3 = 4.736 < 2*N_TP = 6 -> TP stop.
+    t = dict(_C9) | {"u0": (1.0, 0.0, False)}
+    look = judge(_C9, t, _U9, 12, batch=3, n_tp=3, n_fp=2)
+    assert (look.n, look.n_errors, look.d_tp, look.d_fp) == (9, 0, 1, 0)
+    assert (look.n_tp, look.n_fp) == (3, 2)
+    assert look.f_dtp == pytest.approx(4 / 3)
+    assert look.sd_dtp == pytest.approx(_K / 3)
+    assert look.tp_ucb == pytest.approx(4 / 3 + 2.8 * _K / 3)
+    # g = dtp here: F_g + 2.8*SD_g > 0, so the FP clause is not crossed
+    assert look.f_g == pytest.approx(4 / 3) and look.sd_g == pytest.approx(_K / 3)
+    assert look.g_ucb == pytest.approx(4 / 3 + 2.8 * _K / 3)
+    assert look.f_dfp == 0 and look.sd_dfp == 0 and look.fp_lcb == 0
+    assert look.clause == "TP" and look.stop is True
+    # fewer than min_batches: crossed but no stop
+    early = judge(_C9, t, _U9, 12, batch=2, n_tp=3, n_fp=2)
+    assert early.clause == "TP" and early.stop is False
+    # a lower N_TP clears it: 4.736 >= 2*2
+    assert judge(_C9, t, _U9, 12, batch=3, n_tp=2, n_fp=2).stop is False
+
+
+def test_judge_recall_fp_clause_needs_both_conditions():
+    # every unit gains a TP; u0-u7 also gain an FP.
+    # dtp = 1 everywhere: F_dtp = 12, SD_dtp = 0 -> TP clause not crossed (12 >= 6).
+    # dfp = [1 x 8, 0]: mean 8/9, var = (8*(1/9)^2 + (8/9)^2)/8 = 1/9, sd = 1/3;
+    #   F_dfp = 32/3, SD_dfp = K/3, F_dfp - 2.8*SD_dfp = 32/3 - 2.8*K/3 = 7.264.
+    # g = [-7 x 8, 1]: mean -55/9, sd = 8/3; F_g = -220/3, SD_g = 8K/3,
+    #   F_g + 2.8*SD_g = -220/3 + 2.8*8K/3 = -46.11 < 0.
+    t = dict.fromkeys(_U9[:8], (1.0, 1.0, False)) | {"u8": (1.0, 0.0, False)}
+    look = judge(_C9, t, _U9, 12, batch=3, n_tp=3, n_fp=2)
+    assert (look.d_tp, look.d_fp) == (9, 8)
+    assert look.f_dtp == pytest.approx(12) and look.sd_dtp == pytest.approx(0)
+    assert look.tp_ucb == pytest.approx(12)
+    assert look.f_dfp == pytest.approx(32 / 3) and look.sd_dfp == pytest.approx(_K / 3)
+    assert look.fp_lcb == pytest.approx(32 / 3 - 2.8 * _K / 3)
+    assert look.f_g == pytest.approx(-220 / 3) and look.sd_g == pytest.approx(8 * _K / 3)
+    assert look.g_ucb == pytest.approx(-220 / 3 + 2.8 * 8 * _K / 3)
+    assert look.clause == "FP" and look.stop is True
+    # only F_g is low: the F_dFP lower bound 7.264 <= N_FP = 8, so no stop
+    weak = judge(_C9, t, _U9, 12, batch=3, n_tp=3, n_fp=8)
+    assert weak.g_ucb < 0 and weak.fp_lcb <= 8
+    assert weak.clause is None and weak.stop is False
+
+
+def test_judge_recall_fp_increase_paid_for_by_tps_does_not_stop():
+    # N = n = 90: 80 units gain a TP, 10 gain an FP. g = [1 x 80, -8 x 10], mean 0 -> F_g = 0,
+    # so F_g + z*SD_g >= 0 although F_dFP - z*SD_dFP = 10 - 2.8*60/sqrt(801) = 4.06 > N_FP = 2.
+    units = [f"u{i}" for i in range(90)]
+    c = dict.fromkeys(units, (0.0, 0.0, False))
+    t = dict.fromkeys(units[:80], (1.0, 0.0, False)) | dict.fromkeys(units[80:], (0.0, 1.0, False))
+    look = judge(c, t, units, 90, batch=3, n_tp=3, n_fp=2)
+    assert look.f_g == pytest.approx(0) and look.g_ucb > 0
+    assert look.f_dfp == pytest.approx(10)
+    assert look.sd_dfp == pytest.approx(60 / math.sqrt(801))  # sd sqrt(80/801), K = 3*sqrt(5)
+    assert look.fp_lcb == pytest.approx(10 - 2.8 * 60 / math.sqrt(801))
+    assert look.fp_lcb > 2 and look.f_dtp == pytest.approx(80)
+    assert look.clause is None and look.stop is False
+
+
+def test_judge_recall_stops_null_and_needs_noise_floors():
+    units = [f"u{i}" for i in range(50)]
+    c = dict.fromkeys(units, (0.0, 0.0, False))
+    look = judge(c, c, units, 50, batch=10, n_tp=3, n_fp=2)
+    assert look.f_dtp == 0 and look.tp_ucb == 0 and look.clause == "TP" and look.stop is True
+    with pytest.raises(ValueError, match="n_tp"):
+        judge(c, c, units, 50, batch=10)
+
+
+def test_judge_recall_fewer_than_two_units_never_stops():
+    c, t = {"a": (0, 0, False)}, {"a": (0, 1, False)}
+    for units in ([], ["a"]):
+        look = judge(c, t, units, 10, batch=5, n_tp=3, n_fp=2)
+        assert look.n == len(units) and look.stop is False and look.clause is None
+        assert look.sd_dtp is None and look.sd_g is None and look.sd_dfp is None
+        assert look.tp_ucb is None and look.g_ucb is None and look.fp_lcb is None
+    assert "n/a" in render_table([look], [1])
+
+
+def test_judge_fp_single_unit_has_zero_se():
+    look = judge({"a": (0, 0, False)}, {"a": (0, 1, False)}, ["a"], 10, batch=3, kind="fp")
+    assert (look.n, look.D, look.se) == (1, -1, 0.0)
 
 
 def test_judge_excludes_errors():
-    c = dict(_C6) | {"e1": (0.0, 0.0, True), "e2": (1.0, 0.0, False)}
-    t = dict(_T6) | {"e1": (0.0, 1.0, False), "e2": (0.0, 0.0, True)}
-    units = [*_U6, "e1", "e2"]
-    look = judge(c, t, units, 8, batch=3)
-    assert (look.n, look.n_errors) == (6, 2)
-    assert look.D == -40 and look.d_fp == 5 and look.d_tp == 0
-    assert look.se == pytest.approx(8.0)
-    assert look.allowance == pytest.approx(16 * 6 / 8)
-    table = render_table([look], [8])
-    assert "| 3 | 8 | 6 | 2 |" in table
+    c = dict(_C9) | {"e1": (0.0, 0.0, True), "e2": (1.0, 0.0, False)}
+    t = dict(_C9) | {"u0": (1.0, 0.0, False), "e1": (0.0, 1.0, False), "e2": (0.0, 0.0, True)}
+    units = [*_U9, "e1", "e2"]
+    look = judge(c, t, units, 12, batch=3, n_tp=3, n_fp=2)
+    assert (look.n, look.n_errors) == (9, 2)
+    assert look.d_tp == 1 and look.d_fp == 0
+    assert look.tp_ucb == pytest.approx(4 / 3 + 2.8 * _K / 3)  # as without e1, e2
+    table = render_table([look], [11])
+    assert "| 3 | 11 | 9 | 2 |" in table
+    assert "2·N_TP = 6" in table and "N_FP = 2" in table and "FUTILE (TP)" in table
+    fp = judge(c, t, units, 12, batch=3, kind="fp")
+    assert (fp.n, fp.n_errors, fp.D) == (9, 2, 2)
 
 
 def test_never_stops_on_positive():
+    # recall: a projected gain F_dTP >= 2*N_TP with no extra FP can cross neither clause
     for kind in ("recall", "fp"):
         for n in (1, 2, 5, 30, 300):
             units = [f"u{i}" for i in range(n)]
             c = dict.fromkeys(units, (0.0, 0.0, False))
             t = dict.fromkeys(units, (1.0, 0.0, False))
             for batch in range(1, 20):
-                look = judge(c, t, units, n, z=0.0, batch=batch, min_batches=1, kind=kind)
-                assert look.D > 0 and look.stop is False
-        # one huge gain, many zeros: big SE, still positive
+                look = judge(
+                    c, t, units, 300, z=0.0, batch=batch, min_batches=1, kind=kind, n_tp=3, n_fp=2
+                )
+                assert look.d_tp > 0 and look.stop is False
+        # gains on a fifth of the units, zeros elsewhere: big SD, still positive
         units = [f"u{i}" for i in range(50)]
         c = dict.fromkeys(units, (0.0, 0.0, False))
-        t = dict(c) | {"u0": (1.0, 0.0, False)}
-        assert judge(c, t, units, 50, batch=10, min_batches=1, kind=kind).stop is False
-        # no change at all is not futile either
-        assert judge(c, c, units, 50, batch=10, kind=kind).stop is False
+        t = dict(c) | dict.fromkeys(units[:10], (1.0, 0.0, False))
+        look = judge(c, t, units, 50, batch=10, min_batches=1, kind=kind, n_tp=3, n_fp=2)
+        assert look.stop is False
+    # fp kind: one huge gain, and no change at all, are not futile either
+    t = dict(c) | {"u0": (1.0, 0.0, False)}
+    assert judge(c, t, units, 50, batch=10, min_batches=1, kind="fp").stop is False
+    assert judge(c, c, units, 50, batch=10, kind="fp").stop is False
 
 
 def test_stops_on_clear_futility_after_min_batches(bench):
     bench.add_runs(("C", CONTROL, {}), ("T", FUTILE, {}))
     con = duckdb.connect(str(bench.db), read_only=True)
     batches = build_batches(UNITS, strata_for(con, "ref", UNITS), batch_size=10)
-    looks = simulate(con, batches, ["C"], ["T"], len(UNITS))
+    looks = simulate(con, batches, ["C"], ["T"], len(UNITS), n_tp=3, n_fp=2)
     con.close()
     assert [x.batch for x in looks] == [1, 2, 3]
     assert [x.stop for x in looks] == [False, False, True]
     # batch 2 is already past the boundary; only the minimum-batch rule holds it
-    assert looks[1].ucb < -looks[1].allowance
+    assert looks[1].clause is not None
 
     r = bench.invoke("--simulate", "--control-runs", "C", "--treatment-runs", "T")
     assert r.exit_code == 0, r.output
@@ -552,7 +627,7 @@ def test_simulate_matches_full_runs(bench):
     bench.add_runs(("C", CONTROL, {}), ("T", mixed, {}))
     con = duckdb.connect(str(bench.db), read_only=True)
     batches = [b["units"] for b in m["batches"]]
-    looks = simulate(con, batches, ["C"], ["T"], len(UNITS))
+    looks = simulate(con, batches, ["C"], ["T"], len(UNITS), n_tp=3, n_fp=2)
     con.close()
     assert [vars(x) for x in looks] == m["looks"]
 
@@ -570,3 +645,53 @@ def test_batches_follow_ref_run_strata(bench):
     assert Counter(strata.values()) == {"benign": 15, "exfil": 15}
     for b in build_batches(UNITS, strata, batch_size=10):
         assert Counter(strata[u] for u in b) == {"benign": 5, "exfil": 5}
+
+
+def _split(outcomes, extra=None):
+    """``outcomes`` in two disjoint halves (by UNITS order); ``extra`` joins the second."""
+    first = {u: outcomes[u] for u in UNITS[::2]}
+    second = {u: outcomes[u] for u in UNITS[1::2]} | (extra or {})
+    return first, second
+
+
+def test_noise_floors_from_reused_controls(bench):
+    # C1: 10 TP, 1 FP. C2 (a union C2a+C2b): 15 TP, 5 FP in the units file, plus one TP and
+    # one FP on units outside it, which must not count. Range: TP 5, FP 4.
+    c2 = dict.fromkeys(MAL, (True, True)) | {u: (False, i < 5) for i, u in enumerate(BEN)}
+    outside = {"Skills/malware/extra": (True, True), "Skills/benign/extra": (False, True)}
+    c2a, c2b = _split(c2, outside)
+    bench.add_runs(("C1", CONTROL, {}), ("C2a", c2a, {}), ("C2b", c2b, {}), ("T", CONTROL, {}))
+    con = duckdb.connect(str(bench.db), read_only=True)
+    try:
+        assert screen.noise_floors_for(con, "C1,C2a+C2b", UNITS) == (
+            5,
+            4,
+            "range over 2 reused control replicates",
+        )
+        assert screen.noise_floors_for(con, "C1", UNITS) == (3, 2, "floors: 1 control replicate")
+        assert screen.noise_floors_for(con, None, UNITS) == (3, 2, "floors: per-batch control")
+    finally:
+        con.close()
+
+    r = bench.invoke("--simulate", "--control-runs", "C1,C2a+C2b", "--treatment-runs", "T")
+    assert r.exit_code == 0, r.output
+    header = r.output.splitlines()[0]
+    assert "N_TP=5, N_FP=4 (range over 2 reused control replicates)" in header, r.output
+    assert "2·N_TP = 10" in r.output and "N_FP = 4" in r.output
+
+    r = bench.invoke("--simulate", "--control-runs", "C1", "--treatment-runs", "T")
+    assert "N_TP=3, N_FP=2 (floors: 1 control replicate)" in r.output.splitlines()[0]
+
+    r = bench.invoke(label="live")
+    assert r.exit_code == 0, r.output
+    assert "N_TP=3, N_FP=2 (floors: per-batch control)" in r.output.splitlines()[0]
+    m = bench.manifest("live")
+    assert (m["n_tp"], m["n_fp"], m["noise_floors"]) == (3, 2, "floors: per-batch control")
+    assert all((x["n_tp"], x["n_fp"]) == (3, 2) for x in m["looks"])
+
+
+def test_fp_kind_ignores_noise_floors(bench):
+    bench.add_runs(("C", CONTROL, {}), ("T", FUTILE, {}))
+    r = bench.invoke("--simulate", "--kind", "fp", "--control-runs", "C", "--treatment-runs", "T")
+    assert r.exit_code == 0, r.output
+    assert "N_TP" not in r.output and "| D | SE |" in r.output
