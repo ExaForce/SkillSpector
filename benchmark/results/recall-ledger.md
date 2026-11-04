@@ -398,6 +398,22 @@ threshold of 50). The Task 2 E2E unit shows the same cap: HIGH 0.9, risk 22, FN.
   ship with their defaults off: `SKILLSPECTOR_EXA_SSD5` and `SKILLSPECTOR_EXA_NECESSITY` (enable with `=on`). The NE1 prompt in the
   tree is the measured B-rev text (`75f9f822`).
 - **Overview:** `results/recall-p4-report.md`.
+- **Rolled back (2026-11-04):** at the user's request all P4 code and tests were removed from the branch (`src/` and
+  `tests/` restored to `1b950d70`). The flags above no longer exist; this record, the evalsets, the screen manifests and
+  the runs in `recall.duckdb` remain. The code is recoverable from commits `80daf70e`..`75f9f822` (NE1 prompt as
+  measured: `75f9f822`).
+- **Why it was rejected, in one place:**
+  - A (SSD-5 inside the SSD prompt) moved recall by less than the control noise (+30.5 TP vs a bar of 46), and a
+    quarter of its findings landed on non-markdown files.
+  - B (per-skill necessity analyzer) found real misses (+79 TP, recall 0.450 → 0.520) but paid +48 FP for them and
+    broke the setup-language guard: it reads ordinary setup, output and safety rules as "unneeded".
+  - B-rev (the one allowed prompt revision) cut that FP cost but lost TP with it (+63.5 / +30.5), landing 3.5 FP
+    over the noise floor. The FP cut came with a TP loss; with only one revision allowed, the data cannot say whether a
+    prompt that keeps both exists.
+  - Underneath both: one HIGH LLM finding scores at most 25 against a threshold of 50, so 166 misses that NE1
+    correctly flagged still stayed FN; and most remaining misses hide the harm in a script SKILL.md runs, which a
+    SKILL.md-only analyzer cannot see.
+  - No run that day passed `health` (6.6–9.4% dropped LLM calls), so no candidate could have been PROMISING anyway.
 - **A human can overrule** the health clause (no run today was healthy, controls included), but B-rev also fails
   ΔFP ≤ max(N_FP, ΔTP/8) on its four replicates, and B fails both that rule and the setup guard. Neither is a near miss worth a full run
   under the pre-registered rules.

@@ -8,6 +8,12 @@
 A+gate and B+gate were not run, because P1's gate was rejected (P4-R8). No final full runs were made and no default
 changed. Both flags ship with their defaults off.
 
+**Rolled back (2026-11-04):** at the user's request the P4 code was removed from the branch (`src/` and `tests/`
+restored to `1b950d70`; recoverable from commits `80daf70e`..`75f9f822`). This report and the run data remain. In
+short, the necessity questions do find real misses, but the one prompt revision cut FP only by also losing TP,
+and the scoring cap (one HIGH LLM finding scores 25 of the 50 needed) keeps most flagged misses FN. The next lever is
+a scoring path, not the prompt.
+
 All numbers are dev-set means on `results/evalsets/p4-dev.txt` (2,393 units: 1,122 malicious, 1,271 benign), from
 same-day runs on 2026-11-04. Full-set and holdout numbers do not exist, because the spec's final-acceptance runs are
 made only for PROMISING candidates, so the spec's two `report` commands were not run. Recall slices below are
