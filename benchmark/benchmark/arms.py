@@ -55,6 +55,27 @@ class ArmsResult:
     warnings: list[str] = field(default_factory=list)
 
 
+def parse_replicates(spec: str) -> list[list[str]]:
+    """``"a+b,c"`` -> ``[["a", "b"], ["c"]]``: comma separates replicates, ``+`` joins runs."""
+    out = []
+    for rep in spec.split(","):
+        members = [m.strip() for m in rep.split("+") if m.strip()]
+        if members:
+            out.append(members)
+    return out
+
+
+Replicate = str | list[str]
+
+
+def _members(rep: Replicate) -> list[str]:
+    return [rep] if isinstance(rep, str) else list(rep)
+
+
+def _label(rep: Replicate) -> str:
+    return "+".join(_members(rep))
+
+
 def _counts(con, run_id: str) -> dict[str, int]:
     got = dict(
         con.execute(
@@ -65,23 +86,44 @@ def _counts(con, run_id: str) -> dict[str, int]:
     return {k: got.get(k, 0) for k in ("TP", "FP", "FN", "TN")}
 
 
-def _check_runs(con, control: list[str], treatment: list[str]) -> None:
+def _rep_counts(con, rep: Replicate) -> dict[str, int]:
+    """A replicate's TP/FP/FN/TN: the sums over its member runs."""
+    cs = [_counts(con, r) for r in _members(rep)]
+    return {k: sum(c[k] for c in cs) for k in ("TP", "FP", "FN", "TN")}
+
+
+def _check_runs(con, control: list[Replicate], treatment: list[Replicate]) -> None:
     if not control or not treatment:
         raise SystemExit("need at least one control and one treatment run")
-    all_ids = [*control, *treatment]
+    reps = [*control, *treatment]
+    all_ids = [r for rep in reps for r in _members(rep)]
     known = {r[0] for r in con.execute("SELECT run_id FROM runs").fetchall()}
     missing = [r for r in all_ids if r not in known]
     if missing:
         raise SystemExit(f"unknown run id(s): {', '.join(missing)}")
-    sets = {
+    member_units = {
         r: {
             x[0]
             for x in con.execute("SELECT unit_path FROM units WHERE run_id = ?", [r]).fetchall()
         }
         for r in all_ids
     }
-    ref = all_ids[0]
-    for r in all_ids[1:]:
+    sets: dict[str, set[str]] = {}
+    for rep in reps:
+        members = _members(rep)
+        seen: set[str] = set()
+        for r in members:
+            shared = seen & member_units[r]
+            if shared:
+                raise click.UsageError(
+                    f"replicate {_label(rep)}: run {r} shares {len(shared)} unit(s) with an"
+                    " earlier member; union members must be disjoint"
+                )
+            seen |= member_units[r]
+        sets[_label(rep)] = seen
+    labels = [_label(rep) for rep in reps]
+    ref = labels[0]
+    for r in labels[1:]:
         if sets[r] != sets[ref]:
             diff = len(sets[r] ^ sets[ref])
             raise SystemExit(
@@ -90,10 +132,10 @@ def _check_runs(con, control: list[str], treatment: list[str]) -> None:
             )
 
 
-def _provenance(con, control: list[str], treatment: list[str]) -> list[RunProvenance]:
+def _provenance(con, control: list[Replicate], treatment: list[Replicate]) -> list[RunProvenance]:
     out = []
-    for arm, ids in (("control", control), ("treatment", treatment)):
-        for r in ids:
+    for arm, reps in (("control", control), ("treatment", treatment)):
+        for r in (m for rep in reps for m in _members(rep)):
             cfg_json, started = con.execute(
                 "SELECT config_json, started_at FROM runs WHERE run_id = ?", [r]
             ).fetchone()
@@ -122,24 +164,33 @@ def _date_warnings(prov: list[RunProvenance]) -> list[str]:
     ]
 
 
-def _mean_attributed(con, run_ids: list[str]) -> float | None:
+def _mean_attributed(con, reps: list[Replicate]) -> float | None:
+    """Mean over replicates of attributed recall; a union replicate pools its members
+    (sum of attributed TPs over sum of SkillHarm units). None if any member lacks labels."""
     vals = []
-    for r in run_ids:
-        a = load_extras(con, r, None).skillharm_attributed
-        if a is None or a.attributed_recall is None:
-            return None
-        vals.append(a.attributed_recall)
+    for rep in reps:
+        att_tp = units = 0
+        for r in _members(rep):
+            a = load_extras(con, r, None).skillharm_attributed
+            if a is None or a.attributed_recall is None:
+                return None
+            att_tp += a.attributed_tp
+            units += a.units
+        vals.append(att_tp / units)
     return mean(vals)
 
 
 def compare_arms(
-    con, control: list[str], treatment: list[str], kind: Literal["recall", "fp"] = "recall"
+    con,
+    control: list[Replicate],
+    treatment: list[Replicate],
+    kind: Literal["recall", "fp"] = "recall",
 ) -> ArmsResult:
     if kind not in ("recall", "fp"):
         raise SystemExit(f"unknown kind {kind!r}; expected 'recall' or 'fp'")
     _check_runs(con, control, treatment)
-    cc = [_counts(con, r) for r in control]
-    tc = [_counts(con, r) for r in treatment]
+    cc = [_rep_counts(con, r) for r in control]
+    tc = [_rep_counts(con, r) for r in treatment]
 
     def arm_mean(cs):
         return {k: mean(c[k] for c in cs) for k in ("TP", "FP", "FN", "TN")}
@@ -174,7 +225,7 @@ def compare_arms(
                 f"dFP {d_fp:+.1f} > max(N_FP={n_fp}, dTP/8={d_tp / RECALL_FP_PER_TP:.2f})"
                 f" = {allowed:.2f}: FP cost exceeds 8:1 extra TPs per extra FP"
             )
-        for r in treatment:
+        for r in (m for rep in treatment for m in _members(rep)):
             problems = check_health(con, r)
             if problems:
                 fail(f"treatment run {r} failed health: {'; '.join(problems)}")
@@ -193,8 +244,8 @@ def compare_arms(
     prov = _provenance(con, control, treatment)
     return ArmsResult(
         kind=kind,
-        control=list(control),
-        treatment=list(treatment),
+        control=[_label(r) for r in control],
+        treatment=[_label(r) for r in treatment],
         control_mean=cm,
         treatment_mean=tm,
         n_tp=n_tp,
@@ -298,8 +349,16 @@ def render_markdown(r: ArmsResult) -> str:
 
 @click.command()
 @click.argument("db_path", metavar="DB")
-@click.option("--control", required=True, help="Comma-separated control run ids.")
-@click.option("--treatment", required=True, help="Comma-separated treatment run ids.")
+@click.option(
+    "--control",
+    required=True,
+    help="Comma-separated control replicates; join runs of one replicate with +.",
+)
+@click.option(
+    "--treatment",
+    required=True,
+    help="Comma-separated treatment replicates; join runs of one replicate with +.",
+)
 @click.option("--kind", type=click.Choice(["recall", "fp"]), default="recall", show_default=True)
 @click.option("-o", "--output", "output", type=click.Path(), default=None)
 def main(db_path, control, treatment, kind, output):
@@ -310,8 +369,8 @@ def main(db_path, control, treatment, kind, output):
     try:
         r = compare_arms(
             con,
-            [x.strip() for x in control.split(",") if x.strip()],
-            [x.strip() for x in treatment.split(",") if x.strip()],
+            parse_replicates(control),
+            parse_replicates(treatment),
             kind,
         )
     finally:

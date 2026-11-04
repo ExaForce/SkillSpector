@@ -5,10 +5,11 @@ from __future__ import annotations
 
 import json
 
+import click
 import pytest
 from test_db import _fresh_db
 
-from benchmark.arms import compare_arms, render_markdown
+from benchmark.arms import compare_arms, parse_replicates, render_markdown
 
 N_MAL, N_BEN = 130, 20
 
@@ -228,3 +229,82 @@ def test_arms_warns_on_different_start_dates():
     assert "WARNING" in md and "different dates" in md
     assert "2026-11-01" in md and "2026-11-02" in md
     assert r.verdict == "PROMISING"
+
+
+def _half(con, run_id, tp, fp, m_rng, b_rng, dataset=None):
+    """Run covering malicious m[m_rng] and benign b[b_rng]; detects m<tp and b<fp."""
+    con.execute(
+        "INSERT INTO runs (run_id, use_llm, dataset_path) VALUES (?, FALSE, ?)",
+        [run_id, str(dataset) if dataset else None],
+    )
+    for i in m_rng:
+        _unit(con, run_id, f"m{i}", True, i < tp)
+    for i in b_rng:
+        _unit(con, run_id, f"b{i}", False, i < fp)
+
+
+def _union_db(dataset=None):
+    """Control c (full) vs treatment t1+t2 covering the same units in two disjoint halves."""
+    con = _fresh_db()
+    _run(con, "c", 100, 5, dataset=dataset)
+    _half(con, "t1", 60, 3, range(0, 65), range(0, 10), dataset)  # 60 TP, 3 FP
+    _half(con, "t2", 100, 5, range(65, 130), range(10, 20), dataset)  # 35 TP, 0 FP
+    return con
+
+
+def test_parse_replicates():
+    assert parse_replicates("a+b,c") == [["a", "b"], ["c"]]
+    assert parse_replicates(" a , b+c+d ") == [["a"], ["b", "c", "d"]]
+
+
+def test_union_counts_sum():
+    con = _union_db()
+    # t1: 60 TP, 3 FP; t2: 35 TP, 0 FP
+    r = compare_arms(con, ["c"], [["t1", "t2"]])
+    assert r.treatment == ["t1+t2"] and r.replicates == (1, 1)
+    assert r.treatment_mean["TP"] == 95 and r.treatment_mean["FP"] == 3
+    assert r.d_tp == -5 and r.d_fp == -2
+    md = render_markdown(r)
+    assert "t1+t2" in md
+    assert {"t1", "t2"} <= {p.run_id for p in r.provenance}
+
+
+def test_union_health_requires_all_members():
+    con = _union_db()
+    con.execute("UPDATE classifications SET status = 'Error' WHERE run_id = 't2'")
+    r = compare_arms(con, ["c"], [["t1", "t2"]])
+    assert r.verdict == "REJECT"
+    assert any("t2" in x and "health" in x for x in r.reasons)
+
+
+def test_union_overlap_refused():
+    con = _fresh_db()
+    _run(con, "c", 100, 5)
+    _half(con, "t1", 60, 3, range(0, 70), range(0, 10))
+    _half(con, "t2", 60, 3, range(60, 130), range(5, 20))  # 10 m + 5 b units shared
+    with pytest.raises(click.UsageError, match="15"):
+        compare_arms(con, ["c"], [["t1", "t2"]])
+
+
+def test_union_replicate_must_cover_same_units():
+    con = _fresh_db()
+    _run(con, "c", 100, 5)
+    _half(con, "t1", 60, 3, range(0, 65), range(0, 10))
+    with pytest.raises(SystemExit, match="different unit sets"):
+        compare_arms(con, ["c"], [["t1"]])
+
+
+def test_union_attributed_pools_members(tmp_path):
+    ds = _labels(tmp_path)
+    con = _union_db(ds)
+    _attribute(con, "c", 90)
+    _attribute(con, "t1", 60)  # m0-59
+    for i in range(65, 100):  # injected files cover m0-99
+        con.execute(
+            "INSERT INTO issues (run_id, unit_path, issue_index, severity, file)"
+            " VALUES ('t2', ?, 0, 'HIGH', 'evil.py')",
+            [f"m{i}"],
+        )
+    r = compare_arms(con, ["c"], [["t1", "t2"]], kind="fp")
+    # pooled: (60 + 35) attributed TPs over 100 injected units judged
+    assert r.attributed_recall[1] == pytest.approx(0.95)
