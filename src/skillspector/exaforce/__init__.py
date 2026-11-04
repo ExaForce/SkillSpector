@@ -15,6 +15,7 @@ from . import (
     _build_context_patches,
     _filter_patches,
     _hidden_text,
+    _necessity,
     _necessity_prompt,
     _prompt_patches,
     _sampling_patches,
@@ -38,4 +39,5 @@ def apply_patches() -> None:
     _build_context_patches.apply()
     _hidden_text.apply()
     _necessity_prompt.apply()
+    _necessity.apply()
     _PATCHED = True
