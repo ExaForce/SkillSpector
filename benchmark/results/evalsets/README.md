@@ -8,3 +8,13 @@
 - `p3-focus.txt`: `uv run evalset focus results/evalsets/p3-focus.txt --db results/recall.duckdb --run e16e394f65c3 --cap 900 --where "bf.boundary_cluster IN ('C02_skillharm_redirect','C06_msb_agenttrap_leak_asm','C11_skillinject') OR (NOT e.truth_malicious AND e.unit_path IN (SELECT unit_path FROM components WHERE run_id='e16e394f65c3' AND path ILIKE '%.md' AND path NOT ILIKE '%SKILL.md'))"`. All 782 cluster units are kept (all malicious: C02 423, C06 149, C11 210) plus 118 benign multi-doc units sampled with seed 29. The plan's literal clause also admitted malicious multi-doc units; those are 3,280 in total, so the cap would have kept 900 malicious units and no benign ones (ruling P3-R3).
 - `p3-dev.txt`: `core-dev.txt` ∪ `p3-focus.txt` (2,112 units: 1,078 malicious / 1,034 benign). P3's guard population is the 534 benign units in it that have a non-SKILL `.md` component (138 FP / 396 TN at `baseline-v2`).
 - `splits.tsv` (regenerated in P3): same command as P2's (`results/evalsets/*-dev.txt`); 2,650 dev, 10,068 holdout.
+- `p4-focus.txt` has 1,313 units, built in two steps.
+  - Step 1: `uv run evalset focus results/evalsets/p4-focus.txt --db results/recall.duckdb --run e16e394f65c3 --where "<P4 Task 3 clause>"`, with **no cap** (ruling P4-R5). This gave 1,019 units: 883 malicious and 136 benign. The plan's `--cap 1000` would have sampled away 19 of the benign guard units.
+  - Step 2: 300 setup-language benign skills were appended, then `sort -u`.
+    - Candidates come from `(cd <Dataset> && grep -l -i -E 'preflight|before (you|using)|must (first|always)|setup|clean ?up|always (report|include|format)' Skills/benign/*/SKILL.md)`, with the `/SKILL.md` suffix stripped: 2,325 matches.
+    - The sample is `sorted(random.Random(29).sample(sorted(matches), 300))`. 6 of the sampled units were already in step 1.
+- `p4-dev.txt`: `core-dev.txt` ∪ `p4-focus.txt`, 2,393 units. At `baseline-v2` it holds 1,122 malicious units (FN 636 / TP 486) and 1,271 benign (FP 224 / TN 1,047).
+- `p4-guard-setup.txt`: P4 guard 1, every benign unit in `p4-dev.txt` that matches the grep above (ruling P4-R7). 663 units, 122 FP at `baseline-v2`.
+  - Guard 2 is the 49 benign `%skillinject-clean%` units, 5 FP (ruling P4-R6).
+  - Guard 3 is the 90 benign units in `p4-dev.txt` with more than 20 components at `baseline-v2`, 41 FP.
+- `splits.tsv` (regenerated in P4): same command as P2's (`results/evalsets/*-dev.txt`). 3,315 dev, 9,403 holdout.
