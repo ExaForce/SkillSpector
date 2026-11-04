@@ -338,3 +338,9 @@ def test_lu4_requires_exec():
     assert not _fires("EXA-LU4", "base64 -d logo.b64 > logo.png")
     assert not _fires("EXA-LU4", "$bytes = [Convert]::FromBase64String($b64)")
     assert not _fires("EXA-LU4", "powershell -ExecutionPolicy Bypass -File setup.ps1")
+
+
+def test_max_line_chars_matches_live_rule():
+    from skillspector.exaforce import _lure_rules
+
+    assert rulelab.MAX_LINE_CHARS == _lure_rules.MAX_LINE_CHARS

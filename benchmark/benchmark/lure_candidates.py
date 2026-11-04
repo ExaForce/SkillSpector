@@ -71,19 +71,19 @@ PASTE_HOSTS: tuple[str, ...] = (
 PATTERN_SOURCES: dict[str, str] = {
     "EXA-LU1": (
         # fetch ... host ... (| or && or ;) exec
-        r"\b(?:curl|wget|iwr|irm|invoke-webrequest|invoke-restmethod)\b[^\n]*?"
+        r"\b(?:curl|wget|iwr|irm|invoke-webrequest|invoke-restmethod)\b[^\n]{0,256}?"
         r"(?:https?://|(?<=[\s\"'(=]))(?!127\.)"
         r"(?:(?:\d{1,3}\.){3}\d{1,3}|(?:www\.)?(?:pastebin\.com|paste\.ee|pastie\.org|"
         r"hastebin\.com|dpaste\.com|dpaste\.org|paste\.rs|termbin\.com|ix\.io|sprunge\.us|"
         r"rentry\.co|rentry\.org|controlc\.com|justpaste\.it|paste\.debian\.net|bpa\.st|"
         r"paste\.mozilla\.org|gist\.github\.com|gist\.githubusercontent\.com|glot\.io|0bin\.net|"
         r"paste\.gg|pastes\.dev|codepad\.org))(?![\w.-])"
-        r"[^\n]*?(?:\||&&|;)\s*(?:sudo\s+(?:-\S+\s+)*)?"
+        r"[^\n]{0,256}?(?:\||&&|;)\s*(?:sudo\s+(?:-\S+\s+)*)?"
         r"(?:(?:ba|z|da|k)?sh\b(?!\s+-c\b)|iex\b|invoke-expression\b"
         r"|python[\d.]*(?![\w.])(?!\s+-[cm]\b)|node(?![\w.-])(?!\s+-[ep]\b))"
         # sh -c "$(curl ... host ...)" / eval "$(wget ... host ...)"
         r"|(?:\b(?:ba|z|da|k)?sh\s+(?:-\w+\s+)*|\beval\s+)[\"']?(?:\$\(|<\(|`)\s*"
-        r"(?:curl|wget)\b[^\n]*?"
+        r"(?:curl|wget)\b[^\n]{0,256}?"
         r"(?:https?://|(?<=[\s\"'(=]))(?!127\.)"
         r"(?:(?:\d{1,3}\.){3}\d{1,3}|(?:www\.)?(?:pastebin\.com|paste\.ee|pastie\.org|"
         r"hastebin\.com|dpaste\.com|dpaste\.org|paste\.rs|termbin\.com|ix\.io|sprunge\.us|"
@@ -91,8 +91,8 @@ PATTERN_SOURCES: dict[str, str] = {
         r"paste\.mozilla\.org|gist\.github\.com|gist\.githubusercontent\.com|glot\.io|0bin\.net|"
         r"paste\.gg|pastes\.dev|codepad\.org))(?![\w.-])"
         # iex (iwr ... host ...) / iex ((New-Object Net.WebClient).DownloadString('host'))
-        r"|\b(?:iex|invoke-expression)\b[^\n]*?"
-        r"\b(?:iwr|irm|invoke-webrequest|invoke-restmethod|downloadstring|curl|wget)\b[^\n]*?"
+        r"|\b(?:iex|invoke-expression)\b[^\n]{0,256}?"
+        r"\b(?:iwr|irm|invoke-webrequest|invoke-restmethod|downloadstring|curl|wget)\b[^\n]{0,256}?"
         r"(?:https?://|(?<=[\s\"'(=]))(?!127\.)"
         r"(?:(?:\d{1,3}\.){3}\d{1,3}|(?:www\.)?(?:pastebin\.com|paste\.ee|pastie\.org|"
         r"hastebin\.com|dpaste\.com|dpaste\.org|paste\.rs|termbin\.com|ix\.io|sprunge\.us|"
@@ -146,19 +146,19 @@ PATTERN_SOURCES: dict[str, str] = {
     ),
     "EXA-LU4": (
         # base64 -d ... | shell or interpreter
-        r"\bbase64\s+(?:-\w+\s+)*?(?:-[a-z]*d[a-z]*|--decode)\b[^\n]*?"
+        r"\bbase64\s+(?:-\w+\s+)*?(?:-[a-z]*d[a-z]*|--decode)\b[^\n]{0,256}?"
         r"\|\s*(?:sudo\s+(?:-\S+\s+)*)?"
         r"(?:(?:ba|z|da|k)?sh\b(?!\s+-c\b)|python[\d.]*(?![\w.])(?!\s+-[cm]\b)"
         r"|perl\b(?!\s+-e\b)|node(?![\w.-])(?!\s+-[ep]\b))"
         # sh -c "$(... base64 -d)" / eval "$(... base64 -d)"
-        r"|(?:\b(?:ba|z|da|k)?sh\s+(?:-\w+\s+)*|\beval\s+)[\"']?(?:\$\(|<\(|`)[^\n]*?"
+        r"|(?:\b(?:ba|z|da|k)?sh\s+(?:-\w+\s+)*|\beval\s+)[\"']?(?:\$\(|<\(|`)[^\n]{0,256}?"
         r"\bbase64\s+(?:-\w+\s+)*?(?:-[a-z]*d[a-z]*|--decode)\b"
         # PowerShell -EncodedCommand (or an accepted abbreviation) with a payload
-        r"|\b(?:powershell|pwsh)(?:\.exe)?\b[^\n]*?\s-(?:e|ec|enc\w*)\s+"
+        r"|\b(?:powershell|pwsh)(?:\.exe)?\b[^\n]{0,256}?\s-(?:e|ec|enc\w*)\s+"
         r"(?:[a-z0-9+/]{16,}={0,2}|\$\w+)"
         # FromBase64String then iex / Invoke-Expression
         r"|\bfrombase64string\b[\s\S]{0,400}?\b(?:iex|invoke-expression)\b"
-        r"|\b(?:iex|invoke-expression)\b[^\n]*?\bfrombase64string\b"
+        r"|\b(?:iex|invoke-expression)\b[^\n]{0,256}?\bfrombase64string\b"
     ),
 }
 

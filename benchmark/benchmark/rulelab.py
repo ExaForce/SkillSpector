@@ -38,6 +38,12 @@ from dataclasses import dataclass, field
 
 import click
 from skillspector.nodes.analyzers.static_runner import MAX_FILE_CHARS
+
+# Lines longer than this are blanked before matching, mirroring
+# ``skillspector.exaforce._lure_rules.MAX_LINE_CHARS`` (guards against regex blow-up on
+# untrusted dataset files; a test keeps the two equal).
+MAX_LINE_CHARS = 4096
+_LONG_LINE = re.compile(r"[^\n]{%d,}" % (MAX_LINE_CHARS + 1))
 from skillspector.nodes.report import _SEVERITY_POINTS
 
 from .dataset_handler.malskillbench import MalSkillBenchHandler
@@ -99,6 +105,7 @@ def _match(
     for unit_path in sorted(found):
         pending = list(patterns)
         for name, text in _unit_files(found[unit_path]):
+            text = _LONG_LINE.sub("", text)
             for rule in list(pending):
                 m = patterns[rule].search(text)
                 if m:

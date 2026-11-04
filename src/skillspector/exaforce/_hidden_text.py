@@ -48,8 +48,10 @@ ANALYZER_ID = "exaforce_hidden_text"
 # Every EXA-HT finding context starts with this marker. Upstream static_runner drops a
 # markdown/text finding whose context "looks like an example" (contains "such as",
 # "e.g.", ...); hidden content is never a visible example, so that drop is bypassed
-# for marked contexts (see _code_example_interceptor), which bypasses every context that
-# starts with FORK_CONTEXT_PREFIX so other fork analyzers (e.g. the lure rules) can share it.
+# for marked contexts (see _code_example_interceptor). The bypass covers every context that
+# starts with FORK_CONTEXT_PREFIX so other fork analyzers can share it. For the lure rules the
+# context is the matched line, so the real reason is evasion: an attacker can append "# e.g."
+# or "such as" to the lure line in a non-executable file and the drop would hide the finding.
 FORK_CONTEXT_PREFIX = "[exaforce: "
 CONTEXT_MARKER = FORK_CONTEXT_PREFIX + "hidden text] "
 
