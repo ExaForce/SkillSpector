@@ -14,7 +14,10 @@ it; a unit that is ERROR in any run on either side is left out and counted apart
   - (TP) ``F_dtp + 2.8·SD_dtp < 2·N_TP``, or
   - (FP) ``F_g + 2.8·SD_g < 0`` and ``F_dfp - 2.8·SD_dfp > N_FP``.
   ``N_TP``/``N_FP`` are ``arms``' noise floors from the reused control runs when they hold at
-  least 2 replicates (totals restricted to the units file), else the floors 3 and 2.
+  least 2 replicates (totals restricted to the units file; each replicate must cover the whole
+  units file with disjoint members, else the screen refuses). Otherwise (floors mode: per-batch
+  control or 1 control replicate) ``N_TP = 3`` and N_FP is unknown, so the FP clause is off:
+  the floor is conservative for the TP clause only (amended 2026-11-04).
 - fp kind (v1): ``d_i = 2·(tp_t - tp_c) - (fp_t - fp_c)``, ``D = Σ d_i``,
   ``SE = sd(d, ddof=1)·sqrt(n)`` (0 when n < 2); FUTILE iff at least 3 batches are in and
   ``D + 2.8·SE < 0``.
@@ -45,7 +48,7 @@ from statistics import mean, stdev
 
 import click
 
-from .arms import FP_FLOOR, RECALL_FP_PER_TP, TP_FLOOR, noise_floors, parse_replicates
+from .arms import RECALL_FP_PER_TP, TP_FLOOR, noise_floors, parse_replicates
 from .main import read_units_file
 
 BATCH_SIZE = 150
@@ -142,6 +145,8 @@ class Look:
     D: float  # the spec's name for the running sum of d_i
     se: float
     ucb: float  # D + z·SE
+    # always 0: the fp kind has no allowance. Kept so manifests keep the field; the recall
+    # kind's v1 allowance 16·n/N was dropped by the v2 amendment, do not reintroduce it here.
     allowance: float
     stop: bool
 
@@ -157,7 +162,7 @@ class RecallLook:
     d_tp: float  # Σ dtp over judged units
     d_fp: float  # Σ dfp over judged units
     n_tp: int
-    n_fp: int
+    n_fp: int | None  # None: N_FP unknown (floors mode), so the FP clause is off
     f_dtp: float | None
     sd_dtp: float | None
     f_g: float | None
@@ -215,7 +220,8 @@ def judge(
     n_fp: int | None = None,
 ) -> Look | RecallLook:
     """One look over ``units`` (every unit scanned so far); see the module docstring.
-    ``n_tp``/``n_fp`` (the noise floors) are required for the recall kind."""
+    ``n_tp`` is required for the recall kind; ``n_fp`` None (N_FP unknown) turns the FP
+    clause off."""
     if kind not in ("recall", "fp"):
         raise ValueError(f"unknown kind {kind!r}")
     pairs, n_errors = _pairs(control, treatment, units)
@@ -223,8 +229,8 @@ def judge(
     d_fp = float(sum(p[1] for p in pairs))
     n = len(pairs)
     if kind == "recall":
-        if n_tp is None or n_fp is None:
-            raise ValueError("the recall kind needs n_tp and n_fp")
+        if n_tp is None:
+            raise ValueError("the recall kind needs n_tp")
         f_dtp, sd_dtp = _project([p[0] for p in pairs], n_total)
         f_g, sd_g = _project([p[0] - FP_WEIGHT * p[1] for p in pairs], n_total)
         f_dfp, sd_dfp = _project([p[1] for p in pairs], n_total)
@@ -236,7 +242,7 @@ def judge(
             fp_lcb = f_dfp - z * sd_dfp
             if tp_ucb < 2 * n_tp:
                 clauses.append("TP")
-            if g_ucb < 0 and fp_lcb > n_fp:
+            if n_fp is not None and g_ucb < 0 and fp_lcb > n_fp:
                 clauses.append("FP")
         clause = "+".join(clauses) or None
         return RecallLook(
@@ -330,17 +336,49 @@ def _replicate_totals(con, rep: list[str], units: list[str]) -> tuple[int, int]:
     return tp, fp
 
 
-def noise_floors_for(con, control_runs: str | None, units: list[str]) -> tuple[int, int, str]:
-    """``(N_TP, N_FP, source)`` for the recall kind: ``arms``' noise floors over the reused
-    control replicates when there are at least 2 (totals restricted to ``units``), else the
-    floors ``TP_FLOOR``/``FP_FLOOR``."""
+def check_control_replicates(con, control_runs: str, units: list[str]) -> None:
+    """Refuse (``click.UsageError``) reused control replicates whose members overlap, or whose
+    union does not cover every unit of the units file."""
+    wanted = set(units)
+    for rep in parse_replicates(control_runs):
+        seen: set[str] = set()
+        for r in rep:
+            held = {
+                u
+                for (u,) in con.execute(
+                    "SELECT DISTINCT unit_path FROM evaluation WHERE run_id = ?", [r]
+                ).fetchall()
+            }
+            shared = seen & held
+            if shared:
+                raise click.UsageError(
+                    f"control replicate {'+'.join(rep)}: run {r} shares {len(shared)} unit(s)"
+                    " with an earlier member; union members must be disjoint"
+                )
+            seen |= held
+        covered = len(wanted & seen)
+        if covered < len(wanted):
+            raise click.UsageError(
+                f"control replicate {'+'.join(rep)} covers {covered} of {len(wanted)} units of the"
+                " units file; each replicate (the union of its members) must cover every unit"
+            )
+
+
+def noise_floors_for(
+    con, control_runs: str | None, units: list[str]
+) -> tuple[int, int | None, str]:
+    """``(N_TP, N_FP, source)`` for the recall kind. With at least 2 reused control replicates
+    (checked complete and disjoint first): ``arms``' noise floors over their totals restricted
+    to ``units``. Otherwise floors mode: ``N_TP = TP_FLOOR`` and N_FP unknown (None), which
+    turns the FP clause off; the floor is conservative for the TP clause only."""
     reps = parse_replicates(control_runs or "")
     if len(reps) >= 2:
+        check_control_replicates(con, control_runs, units)
         totals = [_replicate_totals(con, rep, units) for rep in reps]
         n_tp, n_fp = noise_floors([t for t, _ in totals], [f for _, f in totals])
         return n_tp, n_fp, f"range over {len(reps)} reused control replicates"
     why = "1 control replicate" if reps else "per-batch control"
-    return TP_FLOOR, FP_FLOOR, f"floors: {why}"
+    return TP_FLOOR, None, f"floors: {why}"
 
 
 def uncovered(con, run_ids: list[str], units: list[str]) -> int:
@@ -402,10 +440,15 @@ def render_table(looks: list[Look] | list[RecallLook], scanned: list[int], z: fl
 
 def _render_recall(looks: list[RecallLook], scanned: list[int], z: float) -> str:
     n_tp, n_fp = looks[0].n_tp, looks[0].n_fp
+    if n_fp is None:
+        g_head = f"F_g+{z:g}·SD_g (FP clause off: N_FP unknown)"
+        fp_head = f"F_dFP-{z:g}·SD (FP clause off)"
+    else:
+        g_head = f"F_g+{z:g}·SD_g (FP: < 0)"
+        fp_head = f"F_dFP-{z:g}·SD (FP: > N_FP = {n_fp})"
     out = [
         f"| batch | units scanned | n judged | errors | dTP | dFP | F_dTP ± SD"
-        f" | F_dTP+{z:g}·SD (TP: < 2·N_TP = {2 * n_tp}) | F_g+{z:g}·SD_g (FP: < 0)"
-        f" | F_dFP-{z:g}·SD (FP: > N_FP = {n_fp}) | stop |",
+        f" | F_dTP+{z:g}·SD (TP: < 2·N_TP = {2 * n_tp}) | {g_head} | {fp_head} | stop |",
         "|---|---|---|---|---|---|---|---|---|---|---|",
     ]
     for look, m in zip(looks, scanned, strict=True):
@@ -646,12 +689,10 @@ def main(
         if not con.execute("SELECT 1 FROM runs WHERE run_id = ?", [ref_run]).fetchone():
             raise SystemExit(f"unknown --ref-run {ref_run}")
         batches = build_batches(units, strata_for(con, ref_run, units), batch_size, seed)
-        n_tp = n_fp = noise_source = None
-        if kind == "recall":
-            n_tp, n_fp, noise_source = noise_floors_for(con, control_runs, units)
         extra_warning = None
         if control_ids:
             _refuse_uncovered(con, "control", control_ids, batches)
+            check_control_replicates(con, control_runs, units)
             extra = _extra_units(con, control_ids, set(units))
             if extra:
                 extra_warning = (
@@ -659,6 +700,9 @@ def main(
                     " units file; the screen proceeds, but `arms` will refuse the printed line"
                     " because the control and treatment unit sets differ"
                 )
+        n_tp = n_fp = noise_source = None
+        if kind == "recall":
+            n_tp, n_fp, noise_source = noise_floors_for(con, control_runs, units)
         if simulate_mode:
             treatment_ids = _flat(treatment_runs)
             _refuse_uncovered(con, "treatment", treatment_ids, batches)
@@ -678,7 +722,13 @@ def main(
     finally:
         con.close()
 
-    floors = f"; N_TP={n_tp}, N_FP={n_fp} ({noise_source})" if kind == "recall" else ""
+    floors = ""
+    if kind == "recall":
+        floors = (
+            f"; N_TP={n_tp} ({noise_source}); FP clause off: N_FP unknown"
+            if n_fp is None
+            else f"; N_TP={n_tp}, N_FP={n_fp} ({noise_source})"
+        )
     click.echo(
         f"screen {label} ({kind}): {n_total} units in {len(batches)} batches"
         f" of <= {batch_size} (seed {seed}, z {z:g}, min batches {min_batches}){floors}"
@@ -736,7 +786,7 @@ def _run_screen(
     z: float,
     min_batches: int,
     n_tp: int | None,
-    n_fp: int | None,
+    n_fp: int | None,  # None: FP clause off (floors mode), or the fp kind
     noise_source: str | None,
     stall_seconds: float,
     auth_wait_seconds: float,

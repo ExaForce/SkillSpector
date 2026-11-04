@@ -347,6 +347,19 @@ def test_judge_recall_fp_clause_needs_both_conditions():
     assert weak.clause is None and weak.stop is False
 
 
+def test_judge_recall_floors_mode_turns_fp_clause_off():
+    # the FP-clause example above, with N_FP unknown (fewer than 2 complete control replicates)
+    t = dict.fromkeys(_U9[:8], (1.0, 1.0, False)) | {"u8": (1.0, 0.0, False)}
+    look = judge(_C9, t, _U9, 12, batch=3, n_tp=3, n_fp=None)
+    assert look.g_ucb < 0 and look.fp_lcb > 2  # would stop with the floor N_FP = 2
+    assert look.n_fp is None and look.clause is None and look.stop is False
+    table = render_table([look], [9])
+    assert "FP clause off: N_FP unknown" in table and "FUTILE" not in table
+    # the TP clause still applies
+    t = dict(_C9) | {"u0": (1.0, 0.0, False)}
+    assert judge(_C9, t, _U9, 12, batch=3, n_tp=3, n_fp=None).clause == "TP"
+
+
 def test_judge_recall_fp_increase_paid_for_by_tps_does_not_stop():
     # N = n = 90: 80 units gain a TP, 10 gain an FP. g = [1 x 80, -8 x 10], mean 0 -> F_g = 0,
     # so F_g + z*SD_g >= 0 although F_dFP - z*SD_dFP = 10 - 2.8*60/sqrt(801) = 4.06 > N_FP = 2.
@@ -401,7 +414,7 @@ def test_judge_excludes_errors():
     assert (fp.n, fp.n_errors, fp.D) == (9, 2, 2)
 
 
-def test_never_stops_on_positive():
+def test_never_stops_on_projected_gain_without_fp():
     # recall: a projected gain F_dTP >= 2*N_TP with no extra FP can cross neither clause
     for kind in ("recall", "fp"):
         for n in (1, 2, 5, 30, 300):
@@ -423,6 +436,24 @@ def test_never_stops_on_positive():
     t = dict(c) | {"u0": (1.0, 0.0, False)}
     assert judge(c, t, units, 50, batch=10, min_batches=1, kind="fp").stop is False
     assert judge(c, c, units, 50, batch=10, kind="fp").stop is False
+
+
+def test_recall_near_threshold_promising_does_not_stop():
+    # 150 of N = 300 judged, noisy control (means of 2 runs): 5 units gain a TP, 20 gain half
+    # a TP, 20 lose half a TP, 1 gains an FP. F_dTP = 300*5/150 = 10 against 2*N_TP = 6, and
+    # F_dFP = 2 <= N_FP = 2: PROMISING by arms logic, close to both thresholds.
+    units = [f"u{i}" for i in range(150)]
+    c = dict.fromkeys(units, (0.0, 0.0, False)) | dict.fromkeys(units[25:45], (0.5, 0.0, False))
+    t = dict(c) | dict.fromkeys(units[:5], (1.0, 0.0, False))
+    t |= dict.fromkeys(units[5:25], (0.5, 0.0, False)) | dict.fromkeys(
+        units[25:45], (0.0, 0.0, False)
+    )
+    t |= {units[149]: (0.0, 1.0, False)}
+    for batch in (3, 10, 16):
+        look = judge(c, t, units, 300, batch=batch, n_tp=3, n_fp=2)
+        assert look.f_dtp == pytest.approx(10) and look.f_dfp == pytest.approx(2)
+        assert look.sd_dtp > 0 and look.sd_dfp > 0
+        assert look.clause is None and look.stop is False
 
 
 def test_stops_on_clear_futility_after_min_batches(bench):
@@ -627,7 +658,8 @@ def test_simulate_matches_full_runs(bench):
     bench.add_runs(("C", CONTROL, {}), ("T", mixed, {}))
     con = duckdb.connect(str(bench.db), read_only=True)
     batches = [b["units"] for b in m["batches"]]
-    looks = simulate(con, batches, ["C"], ["T"], len(UNITS), n_tp=3, n_fp=2)
+    # the live screen scanned control per batch: floors mode, N_FP unknown
+    looks = simulate(con, batches, ["C"], ["T"], len(UNITS), n_tp=3, n_fp=None)
     con.close()
     assert [vars(x) for x in looks] == m["looks"]
 
@@ -668,8 +700,12 @@ def test_noise_floors_from_reused_controls(bench):
             4,
             "range over 2 reused control replicates",
         )
-        assert screen.noise_floors_for(con, "C1", UNITS) == (3, 2, "floors: 1 control replicate")
-        assert screen.noise_floors_for(con, None, UNITS) == (3, 2, "floors: per-batch control")
+        assert screen.noise_floors_for(con, "C1", UNITS) == (
+            3,
+            None,
+            "floors: 1 control replicate",
+        )
+        assert screen.noise_floors_for(con, None, UNITS) == (3, None, "floors: per-batch control")
     finally:
         con.close()
 
@@ -680,14 +716,71 @@ def test_noise_floors_from_reused_controls(bench):
     assert "2·N_TP = 10" in r.output and "N_FP = 4" in r.output
 
     r = bench.invoke("--simulate", "--control-runs", "C1", "--treatment-runs", "T")
-    assert "N_TP=3, N_FP=2 (floors: 1 control replicate)" in r.output.splitlines()[0]
+    assert (
+        "N_TP=3 (floors: 1 control replicate); FP clause off: N_FP unknown"
+        in r.output.splitlines()[0]
+    )
 
     r = bench.invoke(label="live")
     assert r.exit_code == 0, r.output
-    assert "N_TP=3, N_FP=2 (floors: per-batch control)" in r.output.splitlines()[0]
+    assert (
+        "N_TP=3 (floors: per-batch control); FP clause off: N_FP unknown"
+        in r.output.splitlines()[0]
+    )
     m = bench.manifest("live")
-    assert (m["n_tp"], m["n_fp"], m["noise_floors"]) == (3, 2, "floors: per-batch control")
-    assert all((x["n_tp"], x["n_fp"]) == (3, 2) for x in m["looks"])
+    assert (m["n_tp"], m["n_fp"], m["noise_floors"]) == (3, None, "floors: per-batch control")
+    assert all((x["n_tp"], x["n_fp"]) == (3, None) for x in m["looks"])
+
+
+# control detects only m00-m01; the treatment detects every malicious unit (+13 TP) and flags
+# every benign unit (+15 FP): far past 8:1, but F_dTP stays above 2*N_TP = 6
+_LOW = {u: (True, i < 2) for i, u in enumerate(MAL)} | dict.fromkeys(BEN, (False, False))
+_FP_HEAVY = dict.fromkeys(MAL, (True, True)) | dict.fromkeys(BEN, (False, True))
+
+
+def test_floors_mode_never_stops_on_fp_clause(bench):
+    bench.add_runs(("L1", _LOW, {}), ("L2", _LOW, {}), ("T", _FP_HEAVY, {}))
+    # 2 complete replicates: N_TP = 3, N_FP = 2 from their (zero) range, FP clause on
+    r = bench.invoke("--simulate", "--control-runs", "L1,L2", "--treatment-runs", "T")
+    assert r.exit_code == 0, r.output
+    assert "SCREEN: FUTILE at batch 3 (30 units)" in r.output and "FUTILE (FP)" in r.output
+    # 1 replicate: floors, FP clause off, so the same treatment passes
+    r = bench.invoke("--simulate", "--control-runs", "L1", "--treatment-runs", "T")
+    assert r.exit_code == 0, r.output
+    assert "FP clause off: N_FP unknown" in r.output
+    assert "SCREEN: PASSED (30 units)" in r.output
+    # per-batch control scans: floors too
+    bench.plan(_LOW, _FP_HEAVY)
+    r = bench.invoke(label="live")
+    assert r.exit_code == 0, r.output
+    assert "SCREEN: PASSED (30 units)" in r.output
+
+
+def test_control_replicates_must_each_cover_units_file(bench):
+    half = {u: CONTROL[u] for u in UNITS[:15]}
+    bench.add_runs(("C1", CONTROL, {}), ("H", half, {}), ("T", CONTROL, {}))
+    for args in (
+        ("--simulate", "--control-runs", "C1,H", "--treatment-runs", "T"),
+        ("--control-runs", "C1,H"),
+    ):
+        r = bench.invoke(*args, label="half")
+        assert r.exit_code != 0
+        assert "control replicate H covers 15 of 30 units" in r.output, r.output
+    assert not bench.calls()
+
+
+def test_control_replicate_members_must_be_disjoint(bench):
+    first = {u: CONTROL[u] for u in UNITS[:20]}
+    last = {u: CONTROL[u] for u in UNITS[15:]}  # 5 units shared with ``first``
+    bench.add_runs(("C1", CONTROL, {}), ("A", first, {}), ("B", last, {}), ("T", CONTROL, {}))
+    for args in (
+        ("--simulate", "--control-runs", "C1,A+B", "--treatment-runs", "T"),
+        ("--control-runs", "C1,A+B"),
+    ):
+        r = bench.invoke(*args, label="overlap")
+        assert r.exit_code != 0
+        assert "control replicate A+B: run B shares 5 unit(s)" in r.output, r.output
+    assert not bench.calls()
 
 
 def test_fp_kind_ignores_noise_floors(bench):
