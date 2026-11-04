@@ -164,8 +164,10 @@ The recall-kind rule (v2) projects the final dev verdict from the units judged s
 `SD = sd·½·(sqrt(N(N−n)/n) + sqrt(N(N+n)/n))`, and after at least 3 batches stops when either the TP clause
 `F_dtp + z·SD_dtp < 2·N_TP` holds, or both FP conditions `F_g + z·SD_g < 0` and `F_dfp − z·SD_dfp > N_FP` hold.
 `N_TP`/`N_FP` are `arms`' noise floors over the reused control runs when `--control-runs` names at least 2 replicates
-(TP/FP totals over the units file); otherwise (per-batch control, or 1 control replicate) the floors 3 and 2. The
-`--kind fp` rule is unchanged: `D + z·SE < 0` on `d = 2·Δtp − Δfp`.
+(TP/FP totals over the units file). Otherwise (per-batch control, or 1 control replicate) the screen runs in floors
+mode: `N_TP = 3`, N_FP is unknown, and the FP clause is off, so only the TP clause can stop. The floor is conservative
+for the TP clause only; a floor `N_FP = 2` would make FP stops too easy. Reuse 2 complete same-day control replicates
+for recall screens. The `--kind fp` rule is unchanged: `D + z·SE < 0` on `d = 2·Δtp − Δfp`.
 
 ```bash
 uv run screen /path/to/MalSkillBench/Dataset --db results/recall.duckdb \
@@ -179,7 +181,8 @@ Options:
 - `--kind recall|fp` (default `recall`): `fp` uses the FP-reducing score, mirroring `arms --kind`.
 - `--treatment-env K=V`, `--control-env K=V`: env for the scans (repeatable).
 - `--control-runs`: reuse these same-day control runs (replicates by comma, unions by `+`) instead of scanning control
-  per batch. They must cover every unit.
+  per batch. Each replicate, as the union of its members, must cover every unit of the units file, and its members
+  must not overlap; otherwise the screen refuses (in normal mode and with `--simulate`).
 - `--batch-size` (150), `--seed` (29), `--z` (2.8), `--min-batches` (3): the pre-registered constants; do not tune.
 - `--stall-seconds` (1200): a scan whose log has not grown for this long is killed (whole process group) and resumed
   with `--run-id`, at most twice; then the screen stops with an error naming the run.
@@ -191,16 +194,17 @@ Options:
 
 Outputs:
 - A header line with the units, batches and constants; for `--kind recall` also `N_TP`, `N_FP` and their source
-  (`range over k reused control replicates`, `floors: 1 control replicate` or `floors: per-batch control`).
+  (`range over k reused control replicates`), or in floors mode `N_TP` with `floors: 1 control replicate` or
+  `floors: per-batch control` and `FP clause off: N_FP unknown`.
 - After each batch, a table of the look. Recall kind: units scanned, units judged, errors excluded, dTP, dFP,
   `F_dtp ± SD_dtp`, `F_dtp + z·SD_dtp` against `2·N_TP`, `F_g + z·SD_g` against 0, `F_dfp − z·SD_dfp` against
-  `N_FP`, and the stop (`FUTILE (TP)`, `FUTILE (FP)`, `FUTILE (TP+FP)` or `no`). SDs and bounds are `n/a` below 2
-  judged units. FP kind: units scanned, judged, errors, dTP, dFP, `D`, `SE`, `D + z·SE`, the boundary, and FUTILE or
-  no.
-- Files in the screen dir: `manifest.json` (batches, run ids, `n_tp`/`n_fp` and their source, every look's fields,
-  warnings, result), `batch-NN.txt` (each batch's units file), and the per-scan logs `bNN-<arm>.log` (a resumed scan
-  after a stall logs to `bNN-<arm>.retryN.log`). A screen refuses to reuse a dir that already has `manifest.json`; pick another `--label` or `--out-dir`. There is no
-  automatic resume.
+  `N_FP` (in floors mode the two FP columns say `FP clause off`), and the stop (`FUTILE (TP)`, `FUTILE (FP)`,
+  `FUTILE (TP+FP)` or `no`). SDs and bounds are `n/a` below 2 judged units. FP kind: units scanned, judged, errors,
+  dTP, dFP, `D`, `SE`, `D + z·SE`, the boundary, and FUTILE or no.
+- Files in the screen dir: `manifest.json` (batches, run ids, `n_tp`/`n_fp` (`n_fp` null in floors mode) and their
+  source, every look's fields, warnings, result), `batch-NN.txt` (each batch's units file), and the per-scan logs
+  `bNN-<arm>.log` (a resumed scan after a stall logs to `bNN-<arm>.retryN.log`). A screen refuses to reuse a dir that
+  already has `manifest.json`; pick another `--label` or `--out-dir`. There is no automatic resume.
 - The last line is `SCREEN: FUTILE at batch k (m units)`, where m is the units scanned so far. On PASSED the last
   two lines are `SCREEN: PASSED (n units)` and an `arms:` line with the `--control` and `--treatment` run ids to pass
   to `arms`. The union of the batch runs is treatment replicate 1.

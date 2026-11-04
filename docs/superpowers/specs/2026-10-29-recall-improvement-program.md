@@ -173,7 +173,8 @@ reject.
 - A union replicate's health is pooled over its member runs: scans, dropped calls and ERRORs summed, semantic issues
   counted over all members, the median run_time over the union's scans, and the LLM checks applied if any member used
   the LLM. It is judged exactly as the one full run it stands in for.
-- Control runs are reused only from the same day, tree and dev set.
+- Control runs are reused only from the same day, tree and dev set. The screen refuses reused control replicates
+  unless each one covers the whole units file as the union of its members, and no replicate's members overlap.
 - The screen never accepts.
 
 **Amended 2026-11-04, before any live screen: recall-kind rule v2.** The rule and its acceptance criteria were written
@@ -193,7 +194,8 @@ Rule (v2), verbatim from the pre-registration:
     - If the reused control runs are ≥ 2 complete replicates, `N_TP = max(3, range of TP totals)` and
       `N_FP = max(2, range of FP totals)`.
     - Otherwise (per-batch control, or 1 control), use the floors `N_TP = 3` and `N_FP = 2`. The floors are the
-      smallest the final verdict can use, so they are conservative for futility.
+      smallest the final verdict can use, so they are conservative for futility. *(Amended below: this holds for the
+      TP clause only, and the FP clause is off in floors mode.)*
 - Projection of the final verdict quantities. The final verdict is the mean of 2 treatment replicates minus the
   control mean, as dev-set totals.
   - For x in {dtp, dfp, g}:
@@ -212,14 +214,22 @@ Rule (v2), verbatim from the pre-registration:
 `uv run screen` takes the replicates' TP/FP totals over the units file (a union replicate sums its members). With
 n < 2 it never stops, and the SDs are n/a.
 
+**Floors-mode amendment (2026-11-04, after review, before any live screen).** The floors are conservative for the TP
+clause only: a smaller `2·N_TP` makes a TP stop harder, but a smaller `N_FP` makes an FP stop easier. In per-batch
+control mode the final verdict's N_FP is the FP range of 2 control replicates (13–14 on P1 and P3), so the floor 2
+could stop a candidate that the final verdict would accept. So when the noise floors come from the fallback (fewer than
+2 complete reused control replicates, which includes per-batch control), N_FP is unknown and the FP clause is off: only
+the TP clause can stop. The screen's header and table say "FP clause off: N_FP unknown". This only removes stops; the
+validated 2-reused-control path is unchanged. Recall screens should reuse 2 complete same-day control replicates.
+
 Acceptance criteria (v2 replaces v1 only if all pass):
 - A1: no stop in any single-treatment-run replay of a historical dev-PROMISING candidate (P1 gate=confirmed, P2 A,
   P2 B), with PROMISING recomputed by `arms` logic on the same runs.
-- A2: synthetic false futility ≤ 5% for clearly PROMISING effects. A spare same-day control replicate stands in for
-  treatment noise (P3: controls bfcbcbe585e5, 2e6e81859349, spare e89e74415880; P4: controls 54ce3a6bbe59,
+- A2: synthetic false futility ≤ 5% for clearly PROMISING effects (as pre-registered; see the composite verdicts
+  below). A spare same-day control replicate stands in for treatment noise (P3: controls bfcbcbe585e5, 2e6e81859349, spare e89e74415880; P4: controls 54ce3a6bbe59,
   01d373aebd37, spare 92149d37b0d8), with effects injected on random units, 300 draws per scenario:
   - S1: +3·N_TP TPs and 0 FP;
-  - S2: +4·N_TP TPs and +(4·N_TP/8 − 1) FPs, PROMISING on both clauses.
+  - S2: +4·N_TP TPs and +(4·N_TP/8 − 1) FPs, meant to be PROMISING on both clauses.
 - A3: v2 stops strictly more single-run replays of historical dev-REJECT candidates (P3 A1, P3 A2, P3 B1, P3 B3, P4 A,
   each replicate) than v1.
 - A4 (informational): stop rates of control against control and of the S0 null (spare control, no injection).
@@ -246,21 +256,30 @@ Results (simulate on existing runs, one treatment run per replay; `arms` verdict
 | null: P4 spare | REJECT (+6.5, +16.0, 23, 2) | 92149d37b0d8 | never | b3 (450 units) |
 | null: P3 control vs control | REJECT (+15.0, +14.0, 3, 2) | bfcbcbe585e5 | never | never |
 
-| base | scenario | N_TP | v1 stop rate | v2 stop rate |
-|---|---|---|---|---|
-| P3 spare e89e74415880 | S1 +3·N_TP TP | 15 | 0/300 | 0/300 |
-| P3 spare e89e74415880 | S2 +4·N_TP TP, +(N_TP/2 − 1) FP | 15 | 0/300 | 0/300 |
-| P4 spare 92149d37b0d8 | S1 +3·N_TP TP | 23 | 0/300 | 0/300 |
-| P4 spare 92149d37b0d8 | S2 +4·N_TP TP, +(N_TP/2 − 1) FP | 23 | 3/300 | 15/300 (5.0%) |
+The A2 composite verdict is `arms` logic on the spare's own totals plus the injection, against the control mean. It
+counts the spare's own drift: the P3 spare is at ΔTP −0.5, ΔFP +12 (N_FP 14), and the P4 spare at ΔTP +6.5, ΔFP +16
+(N_FP 2). Totals are over the units file, from `recall.duckdb`.
+
+| base | scenario | N_TP | composite ΔTP, ΔFP vs max(N_FP, ΔTP/8) | composite verdict | v1 stop rate | v2 stop rate |
+|---|---|---|---|---|---|---|
+| P3 spare e89e74415880 | S1 +3·N_TP TP (+45) | 15 | +44.5 ≥ 30, +12 ≤ max(14, 5.6) | PROMISING | 0/300 | 0/300 |
+| P3 spare e89e74415880 | S2 +4·N_TP TP, +(N_TP/2 − 1) FP (+60, +6) | 15 | +59.5, +18 > max(14, 7.4) | REJECT | 0/300 | 0/300 |
+| P4 spare 92149d37b0d8 | S1 +3·N_TP TP (+69) | 23 | +75.5, +16 > max(2, 9.4) | REJECT | 0/300 | 0/300 |
+| P4 spare 92149d37b0d8 | S2 +4·N_TP TP, +(N_TP/2 − 1) FP (+92, +10) | 23 | +98.5, +26 > max(2, 12.3) | REJECT | 3/300 | 15/300 |
 
 - A1 passes: no PROMISING replay stops.
-- A2 passes: the worst scenario is P4 S2 at 15/300 = 5.0%, at the limit.
+- A2 passes as pre-registered (no cell above 5%), but only P3 S1 is a PROMISING composite. The false-futility evidence
+  is therefore P3 S1 (0/300, an effect 1.5× the TP threshold) plus the A1 replays, all far above their thresholds.
+  P3 S2, P4 S1 and P4 S2 are REJECT composites because of the spares' own FP drift. So the 15/300 P4 S2 stops are
+  probably correct stops, and the 0/300 cells for P3 S2 and P4 S1 are misses of rejects. No A2 cell tests N_TP at the
+  floor or an effect near a threshold.
 - A3 passes: v2 stops 4 of 10 reject replays, v1 stops 3.
 - A4: v2 stops 2 of 3 null replays (the S0 rows are the two spare-control replays); v1 stops none.
 
 Limitation, from the data: v2 stopped 4 of 10 historical reject replays and 2 of 3 null replays, and no promising
 candidate. Any stop saves at least the second treatment replicate. A reject that v2 misses is still caught by the full
-dev verdict. The constants are not retuned.
+dev verdict. `F + z·SD` uses a normal approximation, which can be anti-conservative for sparse effects near the floor
+thresholds: a gain concentrated on a few units may barely show by batch 3. The constants are not retuned.
 
 **Final acceptance (full run):** `ACCEPTED` when all of these hold:
 - recall gain ≥ the plan's minimum, which defaults to **+0.5 points**;
