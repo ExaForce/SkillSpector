@@ -72,8 +72,8 @@ from the user.
 and comes first):
 {NECESSITY_QUESTIONS}
 4. Report a finding only when Q1 = no and Q2, Q3 or Q4 = yes. A step the stated purpose \
-requires (Q1 = yes) is not a finding, however powerful it sounds; ordinary setup, \
-preflight and reporting steps the purpose calls for are normal.
+requires (Q1 = yes) is not a finding, however powerful it sounds; ordinary setup and \
+reporting steps the purpose calls for are normal.
 
 Report each finding as rule_id EXA-NE1, with start_line on the line where the step or \
 rule is written. The message names the step and why the purpose does not need it, in \
