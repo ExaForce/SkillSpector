@@ -1,8 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
 """Flag-gated semantic block gate, documentation-MEDIUM cap and block threshold on the risk scorer (fork behavior).
 
-Wraps ``skillspector.nodes.report._compute_risk_score``. All behaviors are off by
-default; every flag is read on each call so they can be flipped at runtime, and an
+Wraps ``skillspector.nodes.report._compute_risk_score``. The gate and the cap are off by
+default; the block threshold is on, at 49 (``=51`` restores upstream). Every flag is read
+on each call so they can be flipped at runtime, and an
 invalid value falls back to the default with a warning instead of raising. The one
 exception is ``SKILLSPECTOR_EXA_BLOCK_THRESHOLD``: an integer outside 21-80 raises
 ``ValueError`` (logged first), because it would put the MEDIUM band below LOW.
@@ -22,10 +23,13 @@ exception is ``SKILLSPECTOR_EXA_BLOCK_THRESHOLD``: an integer outside 21-80 rais
     keeps only the first N MEDIUM findings from files whose component metadata says
     ``executable: False``, sorted by ``(rule_id, file, start_line)``; the rest are
     dropped from the list *scored*. Reported findings are unchanged.
-``SKILLSPECTOR_EXA_BLOCK_THRESHOLD`` — unset (default) means 49; ``51`` restores the upstream cut. An
-    integer T in 21-80 blocks (``DO_NOT_INSTALL``) when score >= T or on a gate hit. A score
-    in [T, 51) reports band ``HIGH``; a score in [51, T) without a gate hit reports band
-    ``MEDIUM`` with ``CAUTION``. A non-integer value is ignored with a warning.
+``SKILLSPECTOR_EXA_BLOCK_THRESHOLD`` — unset (default) means 49; ``51`` restores the upstream
+    cut. An integer T in 21-80 blocks (``DO_NOT_INSTALL``) when score >= T or on a gate hit.
+    The returned score is clamped so every score-keyed upstream consumer (CLI exit code,
+    MCP ``safe_to_install``, which cut at ``RISK_THRESHOLD`` = 50) agrees with the
+    recommendation: a block returns ``max(score, 51)``, a non-block ``min(score, 50)``;
+    band and recommendation then follow upstream's tables from the clamped score. A
+    non-integer value is ignored with a warning.
 
 The semantics mirror ``benchmark/benchmark/replay.py`` (``_gate_hit``,
 ``cap_doc_mediums``), which chose the policy offline;
@@ -62,7 +66,6 @@ GATE_MIN_SCORE = 51  # floor of upstream's HIGH band
 DEFAULT_THRESHOLD = 49  # P6 accepted; 51 is upstream's cut (GATE_MIN_SCORE)
 MIN_THRESHOLD = 21  # floor of upstream's MEDIUM band
 MAX_THRESHOLD = 80  # top of upstream's HIGH band
-CAUTION_RECOMMENDATION = "CAUTION"
 
 # Same rank upstream ``_compute_risk_score`` uses; an unknown severity ranks below LOW.
 _SEVERITY_RANK = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3}
@@ -211,12 +214,12 @@ def _band(score: int) -> str:
 
 
 def _apply_threshold(score: int, band: str, recommendation: str, threshold: int) -> tuple:
-    """Re-band an upstream (non-gated) result under threshold T (see the module docstring)."""
-    if threshold < GATE_MIN_SCORE and threshold <= score < GATE_MIN_SCORE:
-        return score, "HIGH", BLOCK_RECOMMENDATION
-    if threshold > GATE_MIN_SCORE and GATE_MIN_SCORE <= score < threshold:
-        return score, "MEDIUM", CAUTION_RECOMMENDATION
-    return score, band, recommendation
+    """Clamp a non-gated upstream result at threshold T (see the module docstring)."""
+    clamped = max(score, GATE_MIN_SCORE) if score >= threshold else min(score, GATE_MIN_SCORE - 1)
+    if clamped == score:
+        return score, band, recommendation
+    new_band = _band(clamped)
+    return clamped, new_band, report._RISK_RECOMMENDATION[new_band]
 
 
 def _score_interceptor(original: Callable, args: tuple, kwargs: dict) -> Any:

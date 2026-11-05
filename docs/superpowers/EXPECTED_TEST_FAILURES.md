@@ -69,13 +69,20 @@ Fork-side coverage of the three modes, the empty-verdict case, and the
 `_score_patches` blocks at a score of 49 by default (`SKILLSPECTOR_EXA_BLOCK_THRESHOLD`,
 P6), so a score in [49, 51) bands `HIGH` with `DO_NOT_INSTALL`. Two upstream tests
 assert a score of 50 is `MEDIUM` / `CAUTION` and fail with
-`AssertionError: assert 'HIGH' == 'MEDIUM'`:
+`AssertionError: assert 'HIGH' == 'MEDIUM'`. The score is also clamped to keep
+score-keyed consumers (CLI exit code, MCP `safe_to_install`, cut at 50) consistent with
+the recommendation: a block returns `max(score, 51)`, a non-block `min(score, 50)`. So a
+score of 50 becomes 51 and three more tests fail with `assert 51 == 50`:
 
 - `tests/nodes/test_report.py::TestReportNode::test_report_critical_finding_medium_band`
 - `tests/nodes/test_report.py::test_report_doc_findings_no_multiplier`
+- `tests/nodes/test_report.py::TestComputeRiskScoreBasic::test_single_finding_full_confidence_scores_base_points[CRITICAL-50]`
+- `tests/nodes/test_report.py::test_report_baseline_keeps_unmatched_finding`
+- `tests/nodes/test_report.py::test_report_no_baseline_unchanged`
 
 `conftest.py` marks them only while the effective `block_threshold()` is <= 50.
-With `SKILLSPECTOR_EXA_BLOCK_THRESHOLD=51` (upstream behaviour) they pass unmarked.
+The entries are calibrated for the default (49) and for 51 (upstream behaviour, where
+they pass unmarked); other values are not guaranteed green.
 
 ## Captured
 

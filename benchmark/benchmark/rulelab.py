@@ -85,6 +85,9 @@ def _search(pattern: re.Pattern, text: str) -> tuple[re.Match | None, str]:
 BENIGN_PER_MILLE = 2  # bar 1: at most 0.2% of benign units
 MIN_FLIPS = 15  # bar 2: replay FN -> TP flips
 RISK_THRESHOLD = 50  # the scanner predicts malicious iff risk_score > 50
+# Upstream's cut. The shipped cut is now 49 (SKILLSPECTOR_EXA_BLOCK_THRESHOLD); the value stays
+# 50 so P5's recorded offline results reproduce. A plan replaying at the shipped default
+# should pass its cut explicitly.
 REPLAY_CONFIDENCE = 0.8  # one added finding scores its severity points x 0.8
 HIGH_SEVERITIES = ("HIGH", "CRITICAL")  # information: FN with an "existing HIGH+ rule"
 EXCERPT_CHARS = 160

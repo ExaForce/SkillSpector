@@ -91,8 +91,8 @@ def _random_lists(n: int = 200) -> list[list[dict]]:
 _LISTS = _random_lists()
 
 
-def _replay_decision(findings: list[dict], policy: Policy) -> tuple[bool, str, str]:
-    """``(verdict, band, recommendation)`` replay gives; the band/rec come from ``decide``."""
+def _replay_decision(findings: list[dict], policy: Policy) -> tuple[bool, int, str, str]:
+    """``(verdict, score, band, recommendation)`` replay gives; the band/rec come from ``decide``."""
     score = min(100, max(0, int(rescore(findings, _EXECUTABLE, policy, _NON_EXECUTABLE))))
     gated = _gate_hit(findings, policy)
     if gated:
@@ -210,17 +210,17 @@ _THRESHOLD_BASES = ("default", "gate-any")
 @pytest.mark.parametrize("base", _THRESHOLD_BASES)
 @pytest.mark.parametrize("threshold", _THRESHOLDS)
 def test_replay_and_classifier_agree_on_threshold(monkeypatch, base, threshold):
-    """Verdict, band and recommendation agree for every T in the sweep grid."""
+    """Verdict, score, band and recommendation agree for every T in the sweep grid."""
     policy = replace(_POLICIES[base][0], threshold=threshold)
     for key, value in _POLICIES[base][1].items():
         monkeypatch.setenv(key, value)
     monkeypatch.setenv("SKILLSPECTOR_EXA_BLOCK_THRESHOLD", str(threshold))
     mismatches = []
     for i, findings in enumerate(_LISTS):
-        verdict, band, rec = _replay_decision(findings, policy)
-        _score, c_band, c_rec = _classifier_result(findings)
-        if (verdict, band, rec) != (c_rec == "DO_NOT_INSTALL", c_band, c_rec):
-            mismatches.append((i, (verdict, band, rec), (c_band, c_rec)))
+        replayed = _replay_decision(findings, policy)
+        c_score, c_band, c_rec = _classifier_result(findings)
+        if replayed != (c_rec == "DO_NOT_INSTALL", c_score, c_band, c_rec):
+            mismatches.append((i, replayed, (c_score, c_band, c_rec)))
     assert not mismatches, f"{len(mismatches)} lists disagree; first: {mismatches[0]}"
 
 
@@ -240,9 +240,13 @@ def test_unset_flag_equals_threshold_49(monkeypatch):
     monkeypatch.delenv("SKILLSPECTOR_EXA_BLOCK_THRESHOLD")
     policy = Policy(threshold=49)
     for findings in _LISTS:
-        verdict, band, rec = _replay_decision(findings, policy)
-        _score, c_band, c_rec = _classifier_result(findings)
-        assert (verdict, band, rec) == (c_rec == "DO_NOT_INSTALL", c_band, c_rec)
+        c_score, c_band, c_rec = _classifier_result(findings)
+        assert _replay_decision(findings, policy) == (
+            c_rec == "DO_NOT_INSTALL",
+            c_score,
+            c_band,
+            c_rec,
+        )
     assert any(
         _replay_verdict(f, policy) != _replay_verdict(f, Policy()) for f in _LISTS
     )  # not vacuous

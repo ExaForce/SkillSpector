@@ -212,19 +212,18 @@ def _band(score: int) -> str:
     return next(band for floor, band in _RISK_SEVERITY_BANDS if score >= floor)
 
 
-def decide(score: int, gated: bool, threshold: int) -> tuple[bool, str, str]:
-    """``(predicted malicious, band, recommendation)`` for a replayed score.
+def decide(score: int, gated: bool, threshold: int) -> tuple[bool, int, str, str]:
+    """``(predicted malicious, score, band, recommendation)`` for a replayed score.
 
-    Blocks when ``gated`` or ``score >= threshold``. A block below the HIGH floor (T < 51)
-    reports band HIGH; a non-block in [51, T) (T > 51) reports MEDIUM with CAUTION. Mirrors
+    Blocks when ``gated`` or ``score >= threshold``. The score is clamped so score-keyed
+    consumers (cut at 50) agree: a block returns ``max(score, 51)``, a non-block
+    ``min(score, 50)``; band and recommendation follow the upstream tables. Mirrors
     ``skillspector.exaforce._score_patches._apply_threshold``.
     """
+    predicted = gated or score >= threshold
+    score = max(score, GATE_MIN_SCORE) if predicted else min(score, GATE_MIN_SCORE - 1)
     band = _band(score)
-    if gated or score >= threshold:
-        return True, band if band in ("HIGH", "CRITICAL") else "HIGH", MALICIOUS_RECOMMENDATION
-    if band == "HIGH":
-        return False, "MEDIUM", "CAUTION"
-    return False, band, _RISK_RECOMMENDATION[band]
+    return predicted, score, band, _RISK_RECOMMENDATION[band]
 
 
 def _replayed_score(
@@ -323,7 +322,7 @@ def replay_run(con, src_run: str, policy: Policy, description: str) -> str:
             gated = _gate_hit(unit_findings, policy)
             if gated:
                 score = max(score, GATE_MIN_SCORE)
-            predicted, band, rec = decide(score, gated, policy.threshold)
+            predicted, score, band, rec = decide(score, gated, policy.threshold)
             # Upstream raises SAFE to CAUTION on a degraded/incomplete scan; visible
             # here only when the source score was in the LOW band.
             if rec == "SAFE" and classification == "CAUTION" and risk_severity == "LOW":

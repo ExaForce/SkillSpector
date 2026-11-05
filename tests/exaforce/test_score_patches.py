@@ -319,15 +319,15 @@ def test_threshold_51_is_identity():
 
 def test_threshold_below_51_blocks_and_bands_high(monkeypatch):
     monkeypatch.setenv(_THRESHOLD_ENV, "35")
-    assert _score(_score_near(40)) == (40, "HIGH", "DO_NOT_INSTALL")
+    assert _score(_score_near(40)) == (51, "HIGH", "DO_NOT_INSTALL")
     assert _score(_score_near(34)) == (34, "MEDIUM", "CAUTION")
-    assert _score(_score_near(35)) == (35, "HIGH", "DO_NOT_INSTALL")
+    assert _score(_score_near(35)) == (51, "HIGH", "DO_NOT_INSTALL")
 
 
 def test_band_matches_recommendation(monkeypatch):
     monkeypatch.setenv(_THRESHOLD_ENV, "49")
     score, band, recommendation = _score(_score_near(49))
-    assert (score, band, recommendation) == (49, "HIGH", "DO_NOT_INSTALL")
+    assert (score, band, recommendation) == (51, "HIGH", "DO_NOT_INSTALL")
     assert report._RISK_RECOMMENDATION[band] == recommendation
 
 
@@ -336,7 +336,7 @@ def test_threshold_above_51_demotes_without_gate(monkeypatch):
     findings = [_f(f"SC{i}", "HIGH", 1.0, file="run.sh") for i in range(2)]
     score = _upstream(findings, True, _DOC_META)[0]
     assert 51 <= score < 70, score
-    assert _score(findings, True, _DOC_META) == (score, "MEDIUM", "CAUTION")
+    assert _score(findings, True, _DOC_META) == (50, "MEDIUM", "CAUTION")
 
 
 def test_threshold_above_51_gate_still_blocks(monkeypatch):
@@ -374,7 +374,7 @@ def test_threshold_non_integer_ignored(monkeypatch, caplog, value):
     with caplog.at_level("WARNING"):
         assert _score_patches.block_threshold() == 49
     assert _THRESHOLD_ENV in caplog.text
-    assert _score(_score_near(49)) == (49, "HIGH", "DO_NOT_INSTALL")
+    assert _score(_score_near(49)) == (51, "HIGH", "DO_NOT_INSTALL")
     assert _score(_score_near(48)) == _upstream(_score_near(48))
 
 
@@ -386,5 +386,56 @@ def test_threshold_blank_is_default(monkeypatch):
 def test_threshold_unset_defaults_to_49(monkeypatch):
     monkeypatch.delenv(_THRESHOLD_ENV)
     assert _score_patches.block_threshold() == 49
-    assert _score(_score_near(49)) == (49, "HIGH", "DO_NOT_INSTALL")
+    assert _score(_score_near(49)) == (51, "HIGH", "DO_NOT_INSTALL")
     assert _score(_score_near(48)) == _upstream(_score_near(48))
+
+
+def _random_findings(rng):
+    rules = ("SSD-1", "SSD-2", "P2", "SC1", "SC2", "X")
+    severities = ("CRITICAL", "HIGH", "MEDIUM", "LOW")
+    files = ("SKILL.md", "README.md", "run.sh")
+    return [
+        _f(
+            rng.choice(rules),
+            rng.choice(severities),
+            rng.choice((0.2, 0.5, 0.7, 0.9, 1.0)),
+            file=rng.choice(files),
+            start_line=rng.randint(1, 9),
+        )
+        for _ in range(rng.randint(0, 10))
+    ]
+
+
+@pytest.mark.parametrize("threshold", range(21, 81))
+@pytest.mark.parametrize("policy", ["plain", "gate", "cap"])
+def test_block_iff_score_above_risk_threshold(monkeypatch, threshold, policy):
+    """Upstream consumers cut on ``risk_score > RISK_THRESHOLD``; the block must agree."""
+    import random
+
+    from skillspector.constants import RISK_THRESHOLD
+
+    monkeypatch.setenv(_THRESHOLD_ENV, str(threshold))
+    if policy == "gate":
+        monkeypatch.setenv("SKILLSPECTOR_EXA_SEMANTIC_GATE", "any")
+    if policy == "cap":
+        monkeypatch.setenv("SKILLSPECTOR_EXA_DOC_MEDIUM_CAP", "1")
+    rng = random.Random(threshold)
+    blocked = unblocked = 0
+    for _ in range(150):
+        score, band, recommendation = _score(_random_findings(rng), True, _DOC_META)
+        assert (recommendation == "DO_NOT_INSTALL") == (score > RISK_THRESHOLD)
+        assert report._RISK_RECOMMENDATION[band] == recommendation or recommendation == "CAUTION"
+        blocked += recommendation == "DO_NOT_INSTALL"
+        unblocked += recommendation != "DO_NOT_INSTALL"
+    assert blocked and unblocked  # both sides exercised
+
+
+def test_scores_between_threshold_and_51_are_lifted_to_51(monkeypatch):
+    monkeypatch.setenv(_THRESHOLD_ENV, "49")
+    assert _score(_score_near(49)) == (51, "HIGH", "DO_NOT_INSTALL")
+
+
+def test_scores_between_51_and_threshold_are_capped_at_50(monkeypatch):
+    monkeypatch.setenv(_THRESHOLD_ENV, "70")
+    findings = [_f(f"SC{i}", "HIGH", 1.0, file="run.sh") for i in range(2)]
+    assert _score(findings, True, _DOC_META) == (50, "MEDIUM", "CAUTION")
