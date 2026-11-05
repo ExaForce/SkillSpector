@@ -19,6 +19,7 @@ _FLAGS = (
     "SKILLSPECTOR_EXA_GATE_RULES",
     "SKILLSPECTOR_EXA_GATE_MIN_SEVERITY",
     "SKILLSPECTOR_EXA_DOC_MEDIUM_CAP",
+    "SKILLSPECTOR_EXA_BLOCK_THRESHOLD",
 )
 
 _DOC_META = [
@@ -291,3 +292,89 @@ def test_unconfirmed_tag_is_the_one_upstream_emits():
     """Upstream spells the tag as a literal (no constant to import), so pin that it still does."""
     assert _score_patches.UNCONFIRMED_TAG == "llm-unconfirmed"
     assert f'"{_score_patches.UNCONFIRMED_TAG}"' in inspect.getsource(meta_analyzer)
+
+
+# --- block threshold -------------------------------------------------------------------
+
+_THRESHOLD_ENV = "SKILLSPECTOR_EXA_BLOCK_THRESHOLD"
+
+
+def _score_near(target):
+    """Findings (HIGH, distinct rules, doc file) whose upstream score is exactly ``target``."""
+    for n in range(1, 5):
+        for conf in (c / 100 for c in range(1, 101)):
+            findings = [_f(f"SC{i}", "HIGH", conf) for i in range(n)]
+            if _upstream(findings)[0] == target:
+                return findings
+    raise AssertionError(target)
+
+
+def test_threshold_unset_is_identity():
+    findings = _score_near(40)
+    assert _score(findings) == _upstream(findings) == (40, "MEDIUM", "CAUTION")
+
+
+def test_threshold_below_51_blocks_and_bands_high(monkeypatch):
+    monkeypatch.setenv(_THRESHOLD_ENV, "35")
+    assert _score(_score_near(40)) == (40, "HIGH", "DO_NOT_INSTALL")
+    assert _score(_score_near(34)) == (34, "MEDIUM", "CAUTION")
+    assert _score(_score_near(35)) == (35, "HIGH", "DO_NOT_INSTALL")
+
+
+def test_band_matches_recommendation(monkeypatch):
+    monkeypatch.setenv(_THRESHOLD_ENV, "49")
+    score, band, recommendation = _score(_score_near(49))
+    assert (score, band, recommendation) == (49, "HIGH", "DO_NOT_INSTALL")
+    assert report._RISK_RECOMMENDATION[band] == recommendation
+
+
+def test_threshold_above_51_demotes_without_gate(monkeypatch):
+    monkeypatch.setenv(_THRESHOLD_ENV, "70")
+    findings = [_f(f"SC{i}", "HIGH", 1.0, file="run.sh") for i in range(2)]
+    score = _upstream(findings, True, _DOC_META)[0]
+    assert 51 <= score < 70, score
+    assert _score(findings, True, _DOC_META) == (score, "MEDIUM", "CAUTION")
+
+
+def test_threshold_above_51_gate_still_blocks(monkeypatch):
+    monkeypatch.setenv(_THRESHOLD_ENV, "70")
+    monkeypatch.setenv("SKILLSPECTOR_EXA_SEMANTIC_GATE", "any")
+    findings = [_f("SSD-2", "HIGH", 0.9)]
+    assert _score(findings) == (51, "HIGH", "DO_NOT_INSTALL")
+
+
+def test_threshold_composes_with_gate_below_51(monkeypatch):
+    monkeypatch.setenv(_THRESHOLD_ENV, "30")
+    monkeypatch.setenv("SKILLSPECTOR_EXA_SEMANTIC_GATE", "any")
+    assert _score([_f("SSD-2", "HIGH", 0.9)]) == (51, "HIGH", "DO_NOT_INSTALL")
+
+
+@pytest.mark.parametrize("value", ["20", "81", "0", "-5", "1000"])
+def test_threshold_out_of_range(monkeypatch, caplog, value):
+    monkeypatch.setenv(_THRESHOLD_ENV, value)
+    with caplog.at_level("ERROR"), pytest.raises(ValueError, match=_THRESHOLD_ENV):
+        _score_patches.block_threshold()
+    assert _THRESHOLD_ENV in caplog.text
+    with pytest.raises(ValueError):
+        _score([_f("SC1", "HIGH")])
+
+
+@pytest.mark.parametrize("value", ["21", "49", "80"])
+def test_threshold_range_edges_accepted(monkeypatch, value):
+    monkeypatch.setenv(_THRESHOLD_ENV, value)
+    assert _score_patches.block_threshold() == int(value)
+
+
+@pytest.mark.parametrize("value", ["abc", "49.5", "4 9"])
+def test_threshold_non_integer_ignored(monkeypatch, caplog, value):
+    monkeypatch.setenv(_THRESHOLD_ENV, value)
+    with caplog.at_level("WARNING"):
+        assert _score_patches.block_threshold() == 51
+    assert _THRESHOLD_ENV in caplog.text
+    findings = _score_near(40)
+    assert _score(findings) == _upstream(findings)
+
+
+def test_threshold_blank_is_default(monkeypatch):
+    monkeypatch.setenv(_THRESHOLD_ENV, "  ")
+    assert _score_patches.block_threshold() == 51

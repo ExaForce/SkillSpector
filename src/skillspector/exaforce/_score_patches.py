@@ -1,9 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Flag-gated semantic block gate and documentation-MEDIUM cap on the risk scorer (fork behavior).
+"""Flag-gated semantic block gate, documentation-MEDIUM cap and block threshold on the risk scorer (fork behavior).
 
-Wraps ``skillspector.nodes.report._compute_risk_score``. Both behaviors are off by
+Wraps ``skillspector.nodes.report._compute_risk_score``. All behaviors are off by
 default; every flag is read on each call so they can be flipped at runtime, and an
-invalid value falls back to the default with a warning instead of raising.
+invalid value falls back to the default with a warning instead of raising. The one
+exception is ``SKILLSPECTOR_EXA_BLOCK_THRESHOLD``: an integer outside 21-80 raises
+``ValueError`` (logged first), because it would put the MEDIUM band below LOW.
 
 ``SKILLSPECTOR_EXA_SEMANTIC_GATE`` — ``off`` (default), ``any`` or ``confirmed``.
     A *hit* is a finding (any confidence) whose ``rule_id`` matches an entry of
@@ -20,6 +22,10 @@ invalid value falls back to the default with a warning instead of raising.
     keeps only the first N MEDIUM findings from files whose component metadata says
     ``executable: False``, sorted by ``(rule_id, file, start_line)``; the rest are
     dropped from the list *scored*. Reported findings are unchanged.
+``SKILLSPECTOR_EXA_BLOCK_THRESHOLD`` — unset (default) means 51, the upstream cut. An
+    integer T in 21-80 blocks (``DO_NOT_INSTALL``) when score >= T or on a gate hit. A score
+    in [T, 51) reports band ``HIGH``; a score in [51, T) without a gate hit reports band
+    ``MEDIUM`` with ``CAUTION``. A non-integer value is ignored with a warning.
 
 The semantics mirror ``benchmark/benchmark/replay.py`` (``_gate_hit``,
 ``cap_doc_mediums``), which chose the policy offline;
@@ -45,6 +51,7 @@ GATE_ENV = "SKILLSPECTOR_EXA_SEMANTIC_GATE"
 RULES_ENV = "SKILLSPECTOR_EXA_GATE_RULES"
 MIN_SEVERITY_ENV = "SKILLSPECTOR_EXA_GATE_MIN_SEVERITY"
 CAP_ENV = "SKILLSPECTOR_EXA_DOC_MEDIUM_CAP"
+THRESHOLD_ENV = "SKILLSPECTOR_EXA_BLOCK_THRESHOLD"
 
 GATE_MODES = ("off", "any", "confirmed")
 DEFAULT_GATE_RULES = ("SSD-1", "SSD-2", "SSD-3", "SSD-4", "P2")
@@ -52,6 +59,10 @@ DEFAULT_MIN_SEVERITY = "HIGH"
 UNCONFIRMED_TAG = "llm-unconfirmed"
 BLOCK_RECOMMENDATION = "DO_NOT_INSTALL"
 GATE_MIN_SCORE = 51  # floor of upstream's HIGH band
+DEFAULT_THRESHOLD = 51
+MIN_THRESHOLD = 21  # floor of upstream's MEDIUM band
+MAX_THRESHOLD = 80  # top of upstream's HIGH band
+CAUTION_RECOMMENDATION = "CAUTION"
 
 # Same rank upstream ``_compute_risk_score`` uses; an unknown severity ranks below LOW.
 _SEVERITY_RANK = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3}
@@ -108,6 +119,23 @@ def resolve_doc_medium_cap() -> int | None:
         logger.warning("%s=%r is not an integer >= 0 — cap is off.", CAP_ENV, raw)
         return None
     return cap
+
+
+def block_threshold() -> int:
+    """The block threshold T: unset or non-integer gives 51; an integer outside 21-80 raises."""
+    raw = os.environ.get(THRESHOLD_ENV, "").strip()
+    if not raw:
+        return DEFAULT_THRESHOLD
+    try:
+        value = int(raw)
+    except ValueError:
+        logger.warning("%s=%r is not an integer — using %d.", THRESHOLD_ENV, raw, DEFAULT_THRESHOLD)
+        return DEFAULT_THRESHOLD
+    if not MIN_THRESHOLD <= value <= MAX_THRESHOLD:
+        message = f"{THRESHOLD_ENV}={value} is outside {MIN_THRESHOLD}-{MAX_THRESHOLD}."
+        logger.error(message)
+        raise ValueError(message)
+    return value
 
 
 def _rule_matches(rule_id: str, rules: Iterable[str]) -> bool:
@@ -182,10 +210,20 @@ def _band(score: int) -> str:
     return "LOW"
 
 
+def _apply_threshold(score: int, band: str, recommendation: str, threshold: int) -> tuple:
+    """Re-band an upstream (non-gated) result under threshold T (see the module docstring)."""
+    if threshold < GATE_MIN_SCORE and threshold <= score < GATE_MIN_SCORE:
+        return score, "HIGH", BLOCK_RECOMMENDATION
+    if threshold > GATE_MIN_SCORE and GATE_MIN_SCORE <= score < threshold:
+        return score, "MEDIUM", CAUTION_RECOMMENDATION
+    return score, band, recommendation
+
+
 def _score_interceptor(original: Callable, args: tuple, kwargs: dict) -> Any:
     mode = resolve_gate_mode()
     cap = resolve_doc_medium_cap()
-    if mode == "off" and cap is None:
+    threshold = block_threshold()
+    if mode == "off" and cap is None and threshold == DEFAULT_THRESHOLD:
         return original(*args, **kwargs)
 
     bound = inspect.signature(original).bind(*args, **kwargs)
@@ -197,12 +235,10 @@ def _score_interceptor(original: Callable, args: tuple, kwargs: dict) -> Any:
         )
     score, band, recommendation = original(*bound.args, **bound.kwargs)
 
-    if mode == "off":
-        return score, band, recommendation
-    if not gate_hit(findings, resolve_gate_rules(), resolve_min_severity(), mode):
-        return score, band, recommendation
-    gated = max(score, GATE_MIN_SCORE)
-    return gated, _band(gated), BLOCK_RECOMMENDATION
+    if mode != "off" and gate_hit(findings, resolve_gate_rules(), resolve_min_severity(), mode):
+        gated = max(score, GATE_MIN_SCORE)
+        return gated, _band(gated), BLOCK_RECOMMENDATION
+    return _apply_threshold(score, band, recommendation, threshold)
 
 
 def _check_bands() -> None:

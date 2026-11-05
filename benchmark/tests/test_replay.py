@@ -310,7 +310,7 @@ def test_replay_threshold_changes_verdict_vocabulary():
     assert con.execute(
         "SELECT classification, is_malicious, risk_severity FROM classifications WHERE run_id = ?",
         [new],
-    ).fetchone() == ("CAUTION", False, "HIGH")
+    ).fetchone() == ("CAUTION", False, "MEDIUM")
 
 
 def test_replay_identity_policy_reproduces_verdicts():

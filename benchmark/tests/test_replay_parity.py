@@ -10,6 +10,7 @@ scored by both under each policy and the block/no-block verdicts compared.
 from __future__ import annotations
 
 import random
+from dataclasses import replace
 
 import pytest
 import skillspector.exaforce
@@ -17,13 +18,14 @@ from skillspector.exaforce import _score_patches
 from skillspector.models import Finding
 from skillspector.nodes import report
 
-from benchmark.replay import GATE_MIN_SCORE, UNCONFIRMED_TAG, Policy, _gate_hit, rescore
+from benchmark.replay import GATE_MIN_SCORE, UNCONFIRMED_TAG, Policy, _gate_hit, decide, rescore
 
 _FLAGS = (
     "SKILLSPECTOR_EXA_SEMANTIC_GATE",
     "SKILLSPECTOR_EXA_GATE_RULES",
     "SKILLSPECTOR_EXA_GATE_MIN_SEVERITY",
     "SKILLSPECTOR_EXA_DOC_MEDIUM_CAP",
+    "SKILLSPECTOR_EXA_BLOCK_THRESHOLD",
 )
 # The classifier's default rule list, so a drift in it shows up as a replay mismatch here.
 _GATE_RULES = _score_patches.DEFAULT_GATE_RULES
@@ -89,12 +91,25 @@ def _random_lists(n: int = 200) -> list[list[dict]]:
 _LISTS = _random_lists()
 
 
-def _replay_verdict(findings: list[dict], policy: Policy) -> bool:
+def _replay_decision(findings: list[dict], policy: Policy) -> tuple[bool, str, str]:
+    """``(verdict, band, recommendation)`` replay gives; the band/rec come from ``decide``."""
     score = min(100, max(0, int(rescore(findings, _EXECUTABLE, policy, _NON_EXECUTABLE))))
     gated = _gate_hit(findings, policy)
     if gated:
         score = max(score, GATE_MIN_SCORE)
-    return gated or score >= policy.threshold
+    return decide(score, gated, policy.threshold)
+
+
+def _replay_verdict(findings: list[dict], policy: Policy) -> bool:
+    return _replay_decision(findings, policy)[0]
+
+
+def _classifier_result(findings: list[dict]) -> tuple[int, str, str]:
+    objs = [
+        Finding(rule_id=f["rule_id"], message="m", **{k: f[k] for k in f if k != "rule_id"})
+        for f in findings
+    ]
+    return report._compute_risk_score(objs, True, _METADATA)
 
 
 def _classifier_verdict(findings: list[dict]) -> bool:
@@ -183,3 +198,36 @@ def test_file_without_metadata_is_never_capped(monkeypatch):
     docs = [dict(f, file="README.md") for f in findings]
     assert not _replay_verdict(docs, policy)
     assert not _classifier_verdict(docs)
+
+
+_THRESHOLDS = tuple(range(31, 62, 2))
+# Gate policies cross-checked with every threshold, so a gate hit under T > 51 is covered.
+_THRESHOLD_BASES = ("default", "gate-any")
+
+
+@pytest.mark.parametrize("base", _THRESHOLD_BASES)
+@pytest.mark.parametrize("threshold", _THRESHOLDS)
+def test_replay_and_classifier_agree_on_threshold(monkeypatch, base, threshold):
+    """Verdict, band and recommendation agree for every T in the sweep grid."""
+    policy = replace(_POLICIES[base][0], threshold=threshold)
+    for key, value in _POLICIES[base][1].items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setenv("SKILLSPECTOR_EXA_BLOCK_THRESHOLD", str(threshold))
+    mismatches = []
+    for i, findings in enumerate(_LISTS):
+        verdict, band, rec = _replay_decision(findings, policy)
+        _score, c_band, c_rec = _classifier_result(findings)
+        if (verdict, band, rec) != (c_rec == "DO_NOT_INSTALL", c_band, c_rec):
+            mismatches.append((i, (verdict, band, rec), (c_band, c_rec)))
+    assert not mismatches, f"{len(mismatches)} lists disagree; first: {mismatches[0]}"
+
+
+def test_threshold_lists_exercise_every_threshold():
+    """Some lists flip at each side of 51, so threshold agreement is not vacuous."""
+    base = [_replay_verdict(f, Policy()) for f in _LISTS]
+    for threshold in (t for t in _THRESHOLDS if t != 51):
+        flipped = sum(
+            _replay_verdict(f, Policy(threshold=threshold)) != b
+            for f, b in zip(_LISTS, base, strict=True)
+        )
+        assert flipped > 0, threshold

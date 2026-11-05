@@ -212,6 +212,21 @@ def _band(score: int) -> str:
     return next(band for floor, band in _RISK_SEVERITY_BANDS if score >= floor)
 
 
+def decide(score: int, gated: bool, threshold: int) -> tuple[bool, str, str]:
+    """``(predicted malicious, band, recommendation)`` for a replayed score.
+
+    Blocks when ``gated`` or ``score >= threshold``. A block below the HIGH floor (T < 51)
+    reports band HIGH; a non-block in [51, T) (T > 51) reports MEDIUM with CAUTION. Mirrors
+    ``skillspector.exaforce._score_patches._apply_threshold``.
+    """
+    band = _band(score)
+    if gated or score >= threshold:
+        return True, band if band in ("HIGH", "CRITICAL") else "HIGH", MALICIOUS_RECOMMENDATION
+    if band == "HIGH":
+        return False, "MEDIUM", "CAUTION"
+    return False, band, _RISK_RECOMMENDATION[band]
+
+
 def _replayed_score(
     stored: int | None, findings, executable, non_executable, policy: Policy
 ) -> int:
@@ -308,19 +323,11 @@ def replay_run(con, src_run: str, policy: Policy, description: str) -> str:
             gated = _gate_hit(unit_findings, policy)
             if gated:
                 score = max(score, GATE_MIN_SCORE)
-            band = _band(score)
-            predicted = gated or score >= policy.threshold
-            if predicted:
-                rec = MALICIOUS_RECOMMENDATION
-            else:
-                rec = _RISK_RECOMMENDATION[band]
-                # Above the band cut but under a higher policy threshold: not a block.
-                if rec == MALICIOUS_RECOMMENDATION:
-                    rec = "CAUTION"
-                # Upstream raises SAFE to CAUTION on a degraded/incomplete scan; visible
-                # here only when the source score was in the LOW band.
-                if rec == "SAFE" and classification == "CAUTION" and risk_severity == "LOW":
-                    rec = "CAUTION"
+            predicted, band, rec = decide(score, gated, policy.threshold)
+            # Upstream raises SAFE to CAUTION on a degraded/incomplete scan; visible
+            # here only when the source score was in the LOW band.
+            if rec == "SAFE" and classification == "CAUTION" and risk_severity == "LOW":
+                rec = "CAUTION"
             classification, is_malicious, risk_score, risk_severity, status = (
                 rec, predicted, score, band, REPLAY_STATUS,
             )  # fmt: skip
