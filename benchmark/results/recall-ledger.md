@@ -78,6 +78,10 @@ row per run, and one decision block per plan below the table.
 | P6 | smoke | T = 49 | 2 | `2d55e4add55e` | 0b018c65 | `SKILLSPECTOR_EXA_BLOCK_THRESHOLD=49` | 5 | OK | live scores 23 / 61 / 21 / 100 / 58: not reproduced |
 | P6 | replay | T = 49 (final) | - | `da9c7e3e55a2` | 0b018c65 (P6 bands) | `--policy '{"threshold": 49}'` | 12,718 | n/a (replay) | TP 4697 / FP 373; superseded by `60503e65c287` |
 | P6 | replay | T = 49 (final, clamped) | - | `60503e65c287` | 33271de5 | `--policy '{"threshold": 49}'` | 12,718 | n/a (replay) | TP 4697 / FP 373; no score left at 49–50; the report's head run |
+| P7 | probe | default (nemotron-super-3-120b) | 1 | `cc8233ec225d` | 910859ed | none | 5 (probe) | OK | time reference: median 10.9 s |
+| P7 | probe | SSD slot = deepseek.v3.2 | 1 | `f9f1ffd9ce2b` | 910859ed | `SKILLSPECTOR_MODEL_SEMANTIC_SECURITY_DISCOVERY=deepseek.v3.2` | 5 | OK, all calls succeeded | PASS: SSD findings on 3/4 malicious; median 10.7 s (0.98×); off-schema 0/3 |
+| P7 | probe | SSD slot = qwen3-235b-a22b-2507 | 1 | `ab95c2117f31` | 910859ed | `..._SEMANTIC_SECURITY_DISCOVERY=qwen.qwen3-235b-a22b-2507` | 5 | OK, all calls succeeded | PASS: 2/4; 13.5 s (1.24×); off-schema 0/2 |
+| P7 | probe | SSD slot = mistral-large-3-675b | 1 | `d46ae64444b2` | 910859ed | `..._SEMANTIC_SECURITY_DISCOVERY=mistral.mistral-large-3-675b-instruct` | 5 | OK, all calls succeeded | PASS: 4/4; 18.9 s (1.74×); off-schema 0/9 |
 
 ## P0
 
@@ -645,3 +649,22 @@ holdout +0.0038. Overview: `results/recall-p6-report.md`.
   is the most common HIGH rule among them.
 - **Score pile-up at 50.** Score 50 alone holds 66 units. Find why scores cluster just under 51 (suspect: the
   meta-analyzer-verdict-over-static-severity patch) before any further threshold move.
+
+## P7
+
+Plan: `docs/superpowers/plans/2026-10-29-recall-p7-model-split.md`. It was amended in `910859ed` by a user decision made
+before any probe. Branch `exaforce/recall-p7-model-split`, from P6's final commit `3f0de98f`.
+
+### Probe (Task 1)
+
+- **Target slot:** `SKILLSPECTOR_MODEL_SEMANTIC_SECURITY_DISCOVERY`. P3 and P4 were rolled back, so their per-skill
+  nodes do not exist. The slot is read per scan through `build_model_config()`.
+- **Candidates:**
+  - The endpoint (us-east-2) lists 50 models, but in a different random order on every call, so the plan's
+    "listing order" rule was a random draw.
+  - The user chose the largest open-weight models: `deepseek.v3.2`, `qwen.qwen3-235b-a22b-2507` and
+    `mistral.mistral-large-3-675b-instruct`, with backups `moonshotai.kimi-k2.5` and `zai.glm-5`.
+- **Probe set:** 4 core-dev malicious units that `baseline-v2` caught with a HIGH+ `SSD-*` finding, plus 1 benign core-dev
+  unit (`scratchpad p7-probe.txt`, P7-R2). The same-day default probe gives the time reference.
+- **Result:** all three pass every criterion (health, no dropped calls, `SSD-*` findings on ≥ 2 of 4 malicious units,
+  median time ≤ 3× default), with no off-schema `SSD` rule ids. The backups were not needed. The run rows are above.
