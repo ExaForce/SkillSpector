@@ -707,3 +707,10 @@ before any probe. Branch `exaforce/recall-p7-model-split`, from P6's final commi
   Judged as one union replicate, as `health` does for screens, it is 8.8% (120/1,364), identical to control r1's 120.
   The dropped scans include 17 FN, against 17 and 16 in the controls, so the drops do not bias the verdict.
 
+### Decision
+
+- **P7 REJECTED at the dev stage** (2026-11-05). No candidate was PROMISING: deepseek ΔTP +13.0 / ΔFP −10.0, mistral
+  +5.5 / +2.5, qwen FUTILE (+5 / −0.5), against a bar of ΔTP ≥ 20. No final full runs, no `_model_defaults.py`, and no
+  default changed (P7-R8).
+- **Reports:** `results/recall-p7-report.md` (dev-rejection format; the spec's two `report` commands need full runs)
+  and `results/recall-program-summary.md`. The program summary's head is P6's `60503e65c287`.
