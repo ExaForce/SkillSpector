@@ -34,6 +34,19 @@ and the fork patch framework.
   - at most 3, taken in the endpoint's listing order.
 
   A model listed in the catalog may still not be invocable, so every candidate is probed before use.
+- **Candidates amended (2026-11-05, user decision, before any probe).** `/v1/models` on the benchmark endpoint
+  (us-east-2) returns its 50 ids in a different random order on every call. So "listing order" is a random draw, and
+  many listed models are smaller than the default. The user chose the largest open-weight models, pre-registered in
+  this order:
+  1. `deepseek.v3.2`
+  2. `qwen.qwen3-235b-a22b-2507`
+  3. `mistral.mistral-large-3-675b-instruct`
+
+  Backups, in order, replace a candidate that fails the Task 1 probe: `moonshotai.kimi-k2.5`, then `zai.glm-5`. Stop
+  after 3 passing candidates.
+- **Target slot.** P3 and P4 were rejected and rolled back, so neither node exists. The target is
+  `SKILLSPECTOR_MODEL_SEMANTIC_SECURITY_DISCOVERY`, which is read per scan through `build_model_config()` in
+  `build_context`. The dev set is `core-dev.txt` ∪ `p1-dev.txt`.
 - Cost guard: treatment p95 scan time ≤ 1.5× control, and the timeout/ERROR rate does not exceed control by more than
   0.5 points.
 - Plan minimum: +0.5 recall points.
