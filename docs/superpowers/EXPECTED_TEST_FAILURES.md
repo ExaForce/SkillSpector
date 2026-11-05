@@ -64,6 +64,19 @@ Fork-side coverage of the three modes, the empty-verdict case, and the
 `category` invariant that makes this work lives in
 `tests/exaforce/test_patches.py`.
 
+## Block threshold (`exaforce/_score_patches.py`) — default 49
+
+`_score_patches` blocks at a score of 49 by default (`SKILLSPECTOR_EXA_BLOCK_THRESHOLD`,
+P6), so a score in [49, 51) bands `HIGH` with `DO_NOT_INSTALL`. Two upstream tests
+assert a score of 50 is `MEDIUM` / `CAUTION` and fail with
+`AssertionError: assert 'HIGH' == 'MEDIUM'`:
+
+- `tests/nodes/test_report.py::TestReportNode::test_report_critical_finding_medium_band`
+- `tests/nodes/test_report.py::test_report_doc_findings_no_multiplier`
+
+`conftest.py` marks them only while the effective `block_threshold()` is <= 50.
+With `SKILLSPECTOR_EXA_BLOCK_THRESHOLD=51` (upstream behaviour) they pass unmarked.
+
 ## Captured
 
 `uv run pytest -m "not integration and not provider" tests/ -q` (2026-09-08):

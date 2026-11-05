@@ -127,6 +127,8 @@ def _patched(monkeypatch):
     assert getattr(report._compute_risk_score, "_exaforce_wrapped", False)
     for name in _FLAGS:
         monkeypatch.delenv(name, raising=False)
+    # Policy() is the upstream scorer (51); the classifier defaults to 49, so pin it.
+    monkeypatch.setenv("SKILLSPECTOR_EXA_BLOCK_THRESHOLD", "51")
 
 
 @pytest.mark.parametrize("name", list(_POLICIES))
@@ -231,3 +233,16 @@ def test_threshold_lists_exercise_every_threshold():
             for f, b in zip(_LISTS, base, strict=True)
         )
         assert flipped > 0, threshold
+
+
+def test_unset_flag_equals_threshold_49(monkeypatch):
+    """The classifier's unset default is T = 49, i.e. ``Policy(threshold=49)`` on the lists."""
+    monkeypatch.delenv("SKILLSPECTOR_EXA_BLOCK_THRESHOLD")
+    policy = Policy(threshold=49)
+    for findings in _LISTS:
+        verdict, band, rec = _replay_decision(findings, policy)
+        _score, c_band, c_rec = _classifier_result(findings)
+        assert (verdict, band, rec) == (c_rec == "DO_NOT_INSTALL", c_band, c_rec)
+    assert any(
+        _replay_verdict(f, policy) != _replay_verdict(f, Policy()) for f in _LISTS
+    )  # not vacuous

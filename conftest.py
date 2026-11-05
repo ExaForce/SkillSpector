@@ -30,6 +30,12 @@ green and strictly checked in that mode too. Fork-side coverage lives in
 on every import, so upstream's exact-list registry assertion is inverted in all
 modes.
 
+``exaforce/_score_patches`` defaults the block threshold to 49, so a score of 50
+bands HIGH / ``DO_NOT_INSTALL`` where upstream's ``test_report`` tests expect
+MEDIUM / ``CAUTION``. Marked conditionally below, only while the effective
+threshold (``block_threshold()``) is <= 50; with
+``SKILLSPECTOR_EXA_BLOCK_THRESHOLD=51`` they pass unmarked.
+
 Keep this list in sync with ``docs/superpowers/EXPECTED_TEST_FAILURES.md``.
 """
 
@@ -71,15 +77,29 @@ _NO_FLOOR_ONLY = (
     "::test_critical_unconfirmed_kept_with_llm_unconfirmed_tag",
 )
 
+_BLOCK_THRESHOLD_REASON = (
+    "exaforce _score_patches blocks at a threshold of 49 by default, so a score of 50 "
+    "bands HIGH/DO_NOT_INSTALL; upstream asserts MEDIUM/CAUTION at the 51 cut"
+)
+
+# Only inverted while the effective block threshold is <= 50.
+_BLOCK_THRESHOLD_ONLY = (
+    "tests/nodes/test_report.py::TestReportNode::test_report_critical_finding_medium_band",
+    "tests/nodes/test_report.py::test_report_doc_findings_no_multiplier",
+)
+
 
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
     """Attach ``xfail(strict=True)`` to the upstream tests the fork patches invert."""
     from skillspector.exaforce._filter_patches import resolve_mode
+    from skillspector.exaforce._score_patches import block_threshold
 
     expected = dict.fromkeys(_SCHEMA_PRUNING, _SCHEMA_PRUNING_REASON)
     expected.update(dict.fromkeys(_ANALYZER_REGISTRY, _ANALYZER_REGISTRY_REASON))
     if resolve_mode() == "none":
         expected.update(dict.fromkeys(_NO_FLOOR_ONLY, _NO_FLOOR_REASON))
+    if block_threshold() <= 50:
+        expected.update(dict.fromkeys(_BLOCK_THRESHOLD_ONLY, _BLOCK_THRESHOLD_REASON))
     for item in items:
         reason = expected.get(item.nodeid)
         if reason is not None:

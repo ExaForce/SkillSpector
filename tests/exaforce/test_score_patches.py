@@ -33,6 +33,9 @@ _DOC_META = [
 def _clean_flags(monkeypatch):
     for name in _FLAGS:
         monkeypatch.delenv(name, raising=False)
+    # Pin the upstream cut so the gate/cap tests compare against upstream; the default
+    # (unset -> 49) has its own tests below.
+    monkeypatch.setenv("SKILLSPECTOR_EXA_BLOCK_THRESHOLD", "51")
 
 
 def _f(rule_id, severity, confidence=0.9, file="SKILL.md", start_line=1, tags=()):
@@ -309,7 +312,7 @@ def _score_near(target):
     raise AssertionError(target)
 
 
-def test_threshold_unset_is_identity():
+def test_threshold_51_is_identity():
     findings = _score_near(40)
     assert _score(findings) == _upstream(findings) == (40, "MEDIUM", "CAUTION")
 
@@ -369,12 +372,19 @@ def test_threshold_range_edges_accepted(monkeypatch, value):
 def test_threshold_non_integer_ignored(monkeypatch, caplog, value):
     monkeypatch.setenv(_THRESHOLD_ENV, value)
     with caplog.at_level("WARNING"):
-        assert _score_patches.block_threshold() == 51
+        assert _score_patches.block_threshold() == 49
     assert _THRESHOLD_ENV in caplog.text
-    findings = _score_near(40)
-    assert _score(findings) == _upstream(findings)
+    assert _score(_score_near(49)) == (49, "HIGH", "DO_NOT_INSTALL")
+    assert _score(_score_near(48)) == _upstream(_score_near(48))
 
 
 def test_threshold_blank_is_default(monkeypatch):
     monkeypatch.setenv(_THRESHOLD_ENV, "  ")
-    assert _score_patches.block_threshold() == 51
+    assert _score_patches.block_threshold() == 49
+
+
+def test_threshold_unset_defaults_to_49(monkeypatch):
+    monkeypatch.delenv(_THRESHOLD_ENV)
+    assert _score_patches.block_threshold() == 49
+    assert _score(_score_near(49)) == (49, "HIGH", "DO_NOT_INSTALL")
+    assert _score(_score_near(48)) == _upstream(_score_near(48))

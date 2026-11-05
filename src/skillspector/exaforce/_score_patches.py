@@ -22,7 +22,7 @@ exception is ``SKILLSPECTOR_EXA_BLOCK_THRESHOLD``: an integer outside 21-80 rais
     keeps only the first N MEDIUM findings from files whose component metadata says
     ``executable: False``, sorted by ``(rule_id, file, start_line)``; the rest are
     dropped from the list *scored*. Reported findings are unchanged.
-``SKILLSPECTOR_EXA_BLOCK_THRESHOLD`` — unset (default) means 51, the upstream cut. An
+``SKILLSPECTOR_EXA_BLOCK_THRESHOLD`` — unset (default) means 49; ``51`` restores the upstream cut. An
     integer T in 21-80 blocks (``DO_NOT_INSTALL``) when score >= T or on a gate hit. A score
     in [T, 51) reports band ``HIGH``; a score in [51, T) without a gate hit reports band
     ``MEDIUM`` with ``CAUTION``. A non-integer value is ignored with a warning.
@@ -59,7 +59,7 @@ DEFAULT_MIN_SEVERITY = "HIGH"
 UNCONFIRMED_TAG = "llm-unconfirmed"
 BLOCK_RECOMMENDATION = "DO_NOT_INSTALL"
 GATE_MIN_SCORE = 51  # floor of upstream's HIGH band
-DEFAULT_THRESHOLD = 51
+DEFAULT_THRESHOLD = 49  # P6 accepted; 51 is upstream's cut (GATE_MIN_SCORE)
 MIN_THRESHOLD = 21  # floor of upstream's MEDIUM band
 MAX_THRESHOLD = 80  # top of upstream's HIGH band
 CAUTION_RECOMMENDATION = "CAUTION"
@@ -122,7 +122,7 @@ def resolve_doc_medium_cap() -> int | None:
 
 
 def block_threshold() -> int:
-    """The block threshold T: unset or non-integer gives 51; an integer outside 21-80 raises."""
+    """The block threshold T: unset or non-integer gives the default 49; an integer outside 21-80 raises."""
     raw = os.environ.get(THRESHOLD_ENV, "").strip()
     if not raw:
         return DEFAULT_THRESHOLD
@@ -223,7 +223,7 @@ def _score_interceptor(original: Callable, args: tuple, kwargs: dict) -> Any:
     mode = resolve_gate_mode()
     cap = resolve_doc_medium_cap()
     threshold = block_threshold()
-    if mode == "off" and cap is None and threshold == DEFAULT_THRESHOLD:
+    if mode == "off" and cap is None and threshold == GATE_MIN_SCORE:
         return original(*args, **kwargs)
 
     bound = inspect.signature(original).bind(*args, **kwargs)
