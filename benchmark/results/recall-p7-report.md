@@ -32,21 +32,39 @@ PROMISING candidates. So the spec's two `report` commands were not run.
 
 ## What this shows
 
-1. **A stronger SSD model finds more, but the verdicts barely move.**
-   - Mistral raised the number of `SSD-*` findings 3× (703 and 649 per replicate, against 224 and 198), and TP by only
-     5.5.
-   - Deepseek raised findings by about 55% (659 against 422) and TP by 13.
-   - This is the same scoring ceiling P3 and P4 hit (`recall-boundaries.md` B1): one HIGH semantic finding scores about
-     25 of the 50 needed to block.
-   - A model change in the SSD slot cannot get past a scoring rule.
+1. **A stronger SSD model finds more, but mostly at MEDIUM, and mostly on units already caught.** The binding
+   limit is detection on the missed units, not the scoring cap.
+
+   | arm (per replicate) | SSD MEDIUM | SSD HIGH+ | TP units with a HIGH+ SSD finding | FN units with a HIGH+ SSD finding | FN |
+   |---|---|---|---|---|---|
+   | control | 24 / 27 | 158 / 143 | 71 / 69 | 26 / 23 | 244 / 234 |
+   | deepseek | 162 / 142 | 168 / 155 | 80 / 80 | 21 / 17 | 230 / 222 |
+   | mistral | 405 / 389 | 268 / 227 | 84 / 82 | 24 / 11 | 229 / 238 |
+   | qwen (screen) | 35 | 233 | 81 | 35 | 234 |
+
+   - The TP gain matches the rise in caught units carrying a HIGH+ SSD finding (about +10 to +13).
+   - About 90% of the missed units carry no HIGH+ SSD finding in any arm. The stronger models do not see those
+     either.
+   - The B1 scoring cap (`recall-boundaries.md`) can explain at most the 11–35 missed units per arm that do carry a
+     HIGH+ SSD finding. Qwen has the most of them (35), but no arm has enough to clear the bar of 20 even if all of
+     them blocked.
 2. **Deepseek is the only candidate that improves both recall and precision** (+13 TP, −10 FP). It is still below the
-   pre-registered bar of twice the noise floor. If a later plan opens a scoring path for semantic findings, deepseek in
-   the SSD slot is the first combination worth re-testing.
-3. **Cost is not the obstacle.** All three models run at or below the default's p95 on the dev set. The Task 1 probe
-   suggested mistral was 1.74× slower on 5 units, but that did not hold at scale.
+   pre-registered bar of twice the noise floor, and it leaves fewer missed units with a HIGH+ SSD finding than the
+   control does. A scoring change for semantic findings would therefore not favour it.
+3. **Cost is not the obstacle.** All three are within the 1.5× p95 guard on the dev set: deepseek 1.11×, mistral
+   0.95×, qwen 0.89×. The Task 1 probe's 1.74× for mistral was a median over 5 units, and it did not hold at scale.
 4. **Schema compliance.** No candidate emits meaningfully more off-schema rule ids than the default.
-   - Qwen once returned an object instead of a string for an SSD `explanation`. That crashed the benchmark's result
-     writer, though not the classifier.
+   - Each arm, the control included, has a few garbage `SSD`-prefixed or unknown rule ids that the other arms never
+     emit: deepseek 6, mistral 5, qwen 3 (information only, P7-R3).
+   - Because the control has such ids too, none can be attributed to the SSD model.
+5. **The harness crash was not an SSD finding** (correction to the `79176a33` message and P7-R6).
+   - During the first qwen screen, one scan produced an issue whose `explanation` was an object, not a string.
+     `db.record_result` sliced it and the run aborted.
+   - SSD findings cannot carry an `explanation`: the fork's schema patch (`exaforce/_schema_patches.py`) removes the
+     field.
+   - The likely source is the `mcp_tool_poisoning` analyzer's TP4 path. It copies `explanation` from raw LLM JSON
+     with no type check, and it runs on the default model. So any run can hit it, controls included, and
+     SkillSpector's own JSON report can carry a non-string `explanation`.
    - The harness now stores such values as JSON (`79176a33`). The re-run produced none.
 
 ## Dev arms
@@ -80,7 +98,7 @@ PROMISING candidates. So the spec's two `report` commands were not run.
 - **Treatment replicate 1:** the union of screen `p7-ml`, 10 batches `9084f8036a80` .. `4ab9f4813acb`. The screen
   PASSED, with union ΔTP +10 / ΔFP +8.5.
 - **Treatment replicate 2:** `4892f4b08e30`.
-- `arms` verdict: **REJECT** (dTP +5.5 < 20). Attributed recall is lower than control.
+- `arms` verdict: **REJECT** (dTP +5.5 < 20). Attributed recall is lower than control (0.2672 against 0.2759).
 
 ### qwen.qwen3-235b-a22b-2507 (`screen`)
 
@@ -92,20 +110,29 @@ PROMISING candidates. So the spec's two `report` commands were not run.
   |---|---|---|---|---|---|---|
   | 10 | 1,364 | +5.0 | −0.5 | +5.0 ± 5.1 | +19.3 | FUTILE (TP) |
 
-  The screen ends FUTILE at the last batch, so the dev verdict is **REJECT**.
+  The screen ends FUTILE at the last batch, so the dev verdict is **REJECT**. Attributed recall is 0.2414 against
+  control's 0.2759.
+- **Tree deviation (P7-R6).** The spec reuses controls only from the same day, tree and dev set. The controls ran at
+  `c6fa968c`, the re-run at `79176a33`. The difference is `benchmark/benchmark/db.py` and its test only, so
+  classification is identical.
 - **Health (P7-R7):** 4 of the 10 batches dropped calls in 10.3–11.7% of scans. As one union replicate, the screen
   drops 8.8% (120/1,364), which is control r1's figure. The dropped scans hold 17 FN, against 17 and 16 in the controls.
 
 ## Caveats
 
 - **The dev set is small for this question:** 412 malicious units. The bar of twice the noise floor (ΔTP ≥ 20) is
-  about +4.9 recall points. A real +2–3 point gain, the size deepseek shows, cannot clear it on this set.
+  about +4.9 recall points. A real gain of about +3 points, the size deepseek shows (+3.2), cannot clear it on this set.
 - **One model per slot was tested, in one slot.** Ensembles and multi-slot routing were out of scope.
 - **The model list is the endpoint's on 2026-11-05.** It is not stable: the listing order is random, and the
   catalogue is not the same as what can actually be routed.
 
 ## Handoffs
 
-- **The harness fix `79176a33` changes `benchmark/` only.** Any model that returns structured `explanation` values can
-  now be recorded.
-- **Re-test candidate:** deepseek in the SSD slot, after any plan that lets corroborated semantic findings block.
+- **The harness fix `79176a33` changes `benchmark/` only.** An issue with a structured `explanation` can now be
+  recorded.
+- **Classifier-side type check (open).** `mcp_tool_poisoning` TP4 can put a non-string `explanation` into
+  SkillSpector's JSON report. That is upstream code; a fork patch would coerce it to a string.
+- **One unrecordable scan still aborts a whole run** (`benchmark/benchmark/main.py`, around `record_result`).
+  Recording it as one ERROR unit would contain any future schema surprise (parked, P7-R10).
+- **No re-test recommended on this evidence.** A stronger SSD model mostly adds findings on units already caught. A
+  model change is worth another look only if it raises HIGH+ findings on the missed units, which none of these did.

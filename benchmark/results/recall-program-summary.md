@@ -8,9 +8,16 @@
 - P5 lure rules, `SKILLSPECTOR_EXA_LURE_RULES`, on by default (`45fb9511`);
 - P6 block threshold 49, `SKILLSPECTOR_EXA_BLOCK_THRESHOLD`, with a score clamp (`4e6863d1`, `33271de5`).
 
-Their same-day causal gains add up to about **+0.015 recall**. Everything else in the cumulative +0.025 is endpoint
-drift and run-to-run churn. Four plans were rejected on the dev set: P1 (a gate that lets semantic findings
-block) on FP cost, and P3, P4 and P7 (each making the LLM find more) on too little verdict change. P2 has no verdict.
+Their same-day causal gains add up to about **+0.015 recall**: P5 +0.0064 (+0.0059 after drift correction) and P6
++0.0087. The rest of the cumulative +0.025 is not attributable to any measured change. It is most likely endpoint
+drift and run-to-run churn: in P5, a same-day full pair moved about 1 point outside the rule-affected units.
+
+Four plans were rejected on the dev set:
+- **P1, P3 and P4** found real misses, with large TP gains (P1 +31.5, P3 up to +113, P4 up to +79). They failed on
+  FP cost, against the 8:1 and noise-floor FP rules, and P3 and P4 also on run health.
+- **P7** failed on too little gain: +13 TP at best, against a bar of 20.
+
+P2 has no verdict.
 
 The head run for the cumulative numbers is `60503e65c287`: P6's replay of the full run `bfa51d835e8b` at T = 49 with the
 clamp. Per the plan, it is the latest full run with every accepted default, because P7 made no full run
@@ -42,13 +49,16 @@ so they are not causal. The per-plan rows above are the causal estimates.
 | recall | 0.709 | 0.712 | **0.734** | +0.025 | +0.022 |
 | precision | 0.928 | 0.931 | **0.926** | −0.002 | −0.005 |
 | TP / FP | 4,538 / 352 | 4,557 / 336 | 4,697 / 373 | +159 / +21 | +140 / +37 |
-| holdout recall | 0.873 | 0.873 | 0.879 | +0.007 | +0.006 |
+| holdout recall | 0.873 † | 0.873 | 0.879 | † | +0.006 |
 | holdout precision | 1.000 † | 0.972 | 0.964 | † | −0.008 |
-| non-STB recall | 0.427 | 0.437 | 0.464 | +0.037 | +0.027 |
+| non-STB recall | 0.427 | 0.437 | 0.464 | +0.037 | +0.028 |
 
-† The holdout split was drawn from the original run's outcomes: every unit the original got wrong on the benign side
-went into a dev set. So the original's holdout precision is 1.000 by construction, and the Δ against it is
-meaningless. Use the `baseline-v2` column for holdout.
+† The dev sets were drawn from the original run's outcomes, so its holdout figures are biased by construction:
+- Every unit the original got wrong on the benign side went into a dev set, so its holdout precision is 1.000.
+- 1,355 of its 1,865 FNs (73%) are in dev, although dev holds only 37.5% of malicious units, so its holdout recall
+  is inflated.
+
+Holdout Δs against the original are therefore meaningless. Use the `baseline-v2` column for holdout.
 
 The original run also fails today's health check (6.9% of scans dropped LLM calls; P0), so `baseline-v2` is the
 cleaner comparator.
@@ -77,9 +87,14 @@ Leak (0.465 → 0.395) and Role Hijack (0.462 → 0.385) went down, so their gai
 run-to-run noise.
 
 **What is still below 0.80, by boundary:**
-- **B1 scoring** (Role Hijack, System Prompt Leak, Safety Bypass): the LLM often finds these, but one HIGH semantic finding
-  scores about 25 of the 50 needed. P1's gate fixed recall but cost too many FPs, P3 and P4 hit the same cap, and P6
-  moved the cut only by 2. The next lever is a scoring path for corroborated semantic findings, not more detection.
+- **B1 scoring** (Role Hijack, System Prompt Leak, Safety Bypass): the LLM often finds these, but one HIGH semantic
+  finding scores about 25, against a block cut of 49 since P6 (51 before).
+  - P1's gate recovered them but cost too many FPs. P3 and P4 reported the same cap on their flagged misses. P6 moved
+    the cut only by 2.
+  - For these behaviours the lever is a scoring path for corroborated semantic findings that costs fewer FPs than
+    P1's gate.
+  - This does not hold across the board. On P7's dev set, about 90% of missed units carry no HIGH semantic finding
+    under any of four models, so most misses are a detection problem.
 - **B3 purpose-fit harm** (Content Manipulation, Goal Hijacking and Resource Abuse on SkillHarm): no plan moved them. P4
   was the only one aimed here and was rejected.
 - **B2 visibility** (Persistence, part of Data Exfiltration): P2's document-text extraction is the targeted fix. It
@@ -95,5 +110,6 @@ run-to-run noise.
   acceptance, or a decision to drop it.
 - **Score-50 mass** (P6 handoff): many units sit just under the cut. Explaining it (the fork's meta-verdict-over-static-severity
   patch is the suspect) is the B1 lever above.
-- **P7 re-test:** deepseek in the SSD slot improved both recall and precision on the dev set without clearing the
-  bar. Re-test it after any change that lets corroborated semantic findings block.
+- **P7:** no re-test is recommended. The stronger SSD models mostly add MEDIUM findings on units already caught.
+- **Harness robustness** (P7 final review): one unrecordable scan still aborts a whole benchmark run. Also,
+  `mcp_tool_poisoning` TP4 can put a non-string `explanation` into SkillSpector's JSON report.

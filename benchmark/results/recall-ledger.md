@@ -88,7 +88,7 @@ row per run, and one decision block per plan below the table.
 | P7 | dev | SSD = deepseek.v3.2 | 2 | `fd442519a30a` | c6fa968c | same | 1,364 | OK | arms ΔTP +13.0 / ΔFP −10.0 -> REJECT (< 20); p95 1.11×, ΔERROR 0; off-schema 0.30% |
 | P7 | dev | SSD = mistral-large-3 | 1 | screen `p7-ml`: 10 batches `9084f8036a80` .. `4ab9f4813acb` | c6fa968c | `..._SEMANTIC_SECURITY_DISCOVERY=mistral.mistral-large-3-675b-instruct` | 1,364 | union OK: dropped 6.8% (93/1364); 1 batch over 10% | screen PASSED, union ΔTP +10 / ΔFP +8.5 |
 | P7 | dev | SSD = mistral-large-3 | 2 | `4892f4b08e30` | c6fa968c | same | 1,364 | OK, 1 error | arms ΔTP +5.5 / ΔFP +2.5 -> REJECT; SSD issues 3× control; p95 0.95×; off-schema 0% |
-| P7 | dev | SSD = qwen3-235b | 1 | `96091f800126` (incomplete) | c6fa968c | `..._SEMANTIC_SECURITY_DISCOVERY=qwen.qwen3-235b-a22b-2507` | 122 of 137 (batch 1) | n/a | harness crash: a non-string SSD `explanation`; fixed in `79176a33`; not used |
+| P7 | dev | SSD = qwen3-235b | 1 | `96091f800126` (incomplete) | c6fa968c | `..._SEMANTIC_SECURITY_DISCOVERY=qwen.qwen3-235b-a22b-2507` | 122 of 137 (batch 1) | n/a | harness crash: a non-string issue `explanation` (likely `mcp_tool_poisoning` TP4, not SSD); fixed in `79176a33`; not used |
 | P7 | dev | SSD = qwen3-235b | 1 | screen `p7-qw2`: 10 batches `6a2aba23c12e` .. `248c43c3c49e` | 79176a33 | same | 1,364 | union OK: dropped 8.8% (120/1364); 4 batches over 10% | screen FUTILE (TP) at batch 10: ΔTP +5 / ΔFP −0.5 -> REJECT |
 
 ## P0
@@ -695,14 +695,17 @@ before any probe. Branch `exaforce/recall-p7-model-split`, from P6's final commi
 
   Every candidate passes the cost guard and the rule_id check, and none is PROMISING. **P7 is REJECTED at the dev
   stage**, so there are no final full runs and no code (Task 3 skipped).
-- **What the numbers say.** Mistral makes 3× as many `SSD-*` findings as the default (703 and 649 against 224 and
-  198) but moves only +5.5 TP. Deepseek is the only candidate pointing the right way on both axes (+13 TP, −10 FP),
-  still below the noise-floor rule. Finding more is not the bottleneck: one semantic finding rarely reaches the block
-  threshold (the B1 scoring cap that sank P3 and P4).
-- **Qwen re-run (P7-R6).** The first qwen screen crashed in batch 1: qwen returned an object where the SSD
-  `explanation` should be a string, and `db.record_result` sliced it. The classifier handled it, the harness did not.
-  `79176a33` stores a non-string explanation as JSON. The screen was re-run as `p7-qw2` against the same controls.
-  The re-run produced no non-string explanations.
+- **What the numbers say.** The stronger models add mostly MEDIUM `SSD-*` findings (mistral 405 and 389 against
+  24 and 27), mostly on units already caught. Caught units with a HIGH+ SSD finding rise by about 10 to 13, which
+  matches the TP gain. About 90% of the missed units have no HIGH+ SSD finding in any arm. Missed units with one: 26
+  and 23 in the control, 21 and 17 for deepseek, 24 and 11 for mistral, 35 for qwen. So the limit is detection on
+  the missed units, not the scoring cap.
+- **Qwen re-run (P7-R6).** The first qwen screen crashed in batch 1: one issue's `explanation` was an object, and
+  `db.record_result` sliced it. `79176a33` stores a non-string explanation as JSON. The screen was re-run as `p7-qw2`
+  against the same controls, at a tree that differs from theirs only in that harness file. The re-run produced no
+  non-string explanations.
+  - Correction (final review I1): this was not an SSD finding. The fork's schema patch removes `explanation` from
+    SSD findings. The likely source is `mcp_tool_poisoning` TP4 on the default model, so any arm could have hit it.
 - **Health of qwen's screen (P7-R7).** 4 of its 10 batches drop calls in slightly over 10% of scans (10.3–11.7%).
   Judged as one union replicate, as `health` does for screens, it is 8.8% (120/1,364), identical to control r1's 120.
   The dropped scans include 17 FN, against 17 and 16 in the controls, so the drops do not bias the verdict.

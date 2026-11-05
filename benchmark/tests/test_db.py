@@ -181,6 +181,17 @@ def test_text_coerces_non_string_explanation():
     assert _text(["a", 1]) == '["a", 1]'
 
 
+def test_record_result_stores_non_string_explanation_as_json():
+    from benchmark.db import record_result
+
+    con = _fresh_db()
+    scan = _scan_with_issue(None)
+    scan.issues[0]["explanation"] = {"why": "x"}
+    record_result(con, "r", scan, no_llm=False)
+    row = con.execute("SELECT explanation FROM issues WHERE run_id='r'").fetchone()
+    assert row == ('{"why": "x"}',)
+
+
 def test_line_or_none_coercion():
     from benchmark.db import _line_or_none
 
