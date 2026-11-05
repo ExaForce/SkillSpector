@@ -46,8 +46,9 @@ PROMISING candidates. So the spec's two `report` commands were not run.
    - About 90% of the missed units carry no HIGH+ SSD finding in any arm. The stronger models do not see those
      either.
    - The B1 scoring cap (`recall-boundaries.md`) can explain at most the 11–35 missed units per arm that do carry a
-     HIGH+ SSD finding. Qwen has the most of them (35), but no arm has enough to clear the bar of 20 even if all of
-     them blocked.
+     HIGH+ SSD finding. The control has 23–26 of those too, so a scoring change would lift the control as well.
+     Qwen has the most (35), about 10 more than the control. That is the only candidate where the cap, not
+     detection, costs a measurable part of its gain.
 2. **Deepseek is the only candidate that improves both recall and precision** (+13 TP, −10 FP). It is still below the
    pre-registered bar of twice the noise floor, and it leaves fewer missed units with a HIGH+ SSD finding than the
    control does. A scoring change for semantic findings would therefore not favour it.
