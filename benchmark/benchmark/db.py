@@ -320,6 +320,18 @@ def _line_or_none(value: object) -> int | None:
     return n if 0 <= n <= 2**31 - 1 else None
 
 
+def _text(value: object, limit: int = 4000) -> str:
+    """Coerce a reported free-text field to a str of at most ``limit`` chars.
+
+    Some models return a JSON object or list where the schema says string; store it as JSON instead of crashing.
+    """
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        value = json.dumps(value, default=str, ensure_ascii=False)
+    return value[:limit]
+
+
 def record_result(con, run_id: str, res: ScanResult, no_llm: bool) -> None:
     """Record one scan result atomically: all rows land, or none do (error re-raised)."""
     con.execute("BEGIN TRANSACTION")
@@ -392,7 +404,7 @@ def _record_result_rows(con, run_id: str, res: ScanResult, no_llm: bool) -> None
                 _line_or_none(loc.get("start_line")),
                 _line_or_none(loc.get("end_line")),
                 issue.get("intent"),
-                (issue.get("explanation") or "")[:4000],
+                _text(issue.get("explanation")),
                 list(issue.get("tags") or []),
             ],
         )

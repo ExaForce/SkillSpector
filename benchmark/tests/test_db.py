@@ -171,6 +171,16 @@ def test_current_git_sha_is_nonempty_string():
     assert current_git_sha()
 
 
+def test_text_coerces_non_string_explanation():
+    from benchmark.db import _text
+
+    assert _text(None) == ""
+    assert _text("abc") == "abc"
+    assert _text("x" * 5000) == "x" * 4000
+    assert _text({"why": "exfil"}) == '{"why": "exfil"}'
+    assert _text(["a", 1]) == '["a", 1]'
+
+
 def test_line_or_none_coercion():
     from benchmark.db import _line_or_none
 
