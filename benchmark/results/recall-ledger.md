@@ -74,6 +74,9 @@ row per run, and one decision block per plan below the table.
 | P6 | preflight | control | 1 | `7a2881fff622` | c0e4ccaa | none (lure rules on by default) | 1 | OK | `Currency__stb-case_01883`: 2 `EXA-LU*` findings with no flag set |
 | P6 | full | control | 1 | `bfa51d835e8b` | c0e4ccaa | none (current defaults) | 12,718 | OK: dropped 8.1% (1032/12718), 0 errors | TP 4641 / FP 347; replay source for the sweep |
 | P6 | replay | T = 31..61 | - | 16 synthetic runs (`2989de038a5c` .. `f450819a4738`; T = 49 `5f4044b8e40a`) | - | `--policy '{"threshold": T}'` | 12,718 | n/a (replay) | table in `results/recall-p6-offline.md` |
+| P6 | smoke | T = 49 | 1 | `11f8b4ab54ce` | 0b018c65 | `SKILLSPECTOR_EXA_BLOCK_THRESHOLD=49` | 3 | OK | live scores 0 / 25 / 48: none in [49, 51) |
+| P6 | smoke | T = 49 | 2 | `2d55e4add55e` | 0b018c65 | `SKILLSPECTOR_EXA_BLOCK_THRESHOLD=49` | 5 | OK | live scores 23 / 61 / 21 / 100 / 58: not reproduced |
+| P6 | replay | T = 49 (final) | - | `da9c7e3e55a2` | 0b018c65 (P6 bands) | `--policy '{"threshold": 49}'` | 12,718 | n/a (replay) | TP 4697 / FP 373; the report's head run |
 
 ## P0
 
@@ -612,3 +615,24 @@ commit `c0e4ccaa`.
 - **Replication** on P5's `93c1faec5bec` (information only, P6-R6): T = 49 again, +0.0069 recall / −0.0030 precision.
 
 Detail: `results/recall-p6-offline.md`.
+
+### Flag and default (Task 2)
+
+- **Flag:** `0b018c65` adds `SKILLSPECTOR_EXA_BLOCK_THRESHOLD` (range 21–80; out-of-range raises `ValueError`; a
+  non-integer warns and uses the default). Replay was aligned so that bands match the classifier (P6-R3).
+- **Default:** `4e6863d1` makes 49 the default; `=51` restores upstream. Two upstream `tests/nodes/test_report.py` tests
+  that expect score 50 to band MEDIUM are strict xfail in the root `conftest.py` while the threshold is ≤ 50 (P6-R9).
+- **Live smoke check:** not reproduced. No live score fell in [49, 51) across 8 units in 2 runs; scores at the cut move
+  25–50 points run to run.
+
+**Final: ACCEPTED at T = 49** (paired replay; findings identical): recall +0.0087, precision −0.0040, TP +56 / FP +26,
+holdout +0.0038. Overview: `results/recall-p6-report.md`.
+
+### Handoffs to P7+
+
+- **Flag provenance.** Unset `SKILLSPECTOR_EXA_BLOCK_THRESHOLD` means 51 before `4e6863d1` and 49 from it. Controls needing
+  the old cut set `=51`.
+- **New FPs.** 26 benign units now block, several mainstream integrations (Asana, Canva, GA4, Snowflake, MS365); `SQP-2`
+  is the most common HIGH rule among them.
+- **Score pile-up at 50.** Score 50 alone holds 66 units. Find why scores cluster just under 51 (suspect: the
+  meta-analyzer-verdict-over-static-severity patch) before any further threshold move.
