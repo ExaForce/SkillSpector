@@ -26,3 +26,6 @@
 - `p5-dev.txt`: `core-dev.txt` ∪ `p5-focus.txt`, 2,296 units (102 overlap). At `baseline-v2` it holds 1,342 malicious units (TP 646 / FN 696) and 954 benign (FP 203 / TN 751).
 - `p5-guard-fetch.txt` (ruling P5-R8): P5's plan guard. It holds every benign p5-dev unit with any file line matching `\b(curl|wget|iwr|Invoke-WebRequest)\b` (case-insensitive, via `rulelab.match_units`): 246 units, 73 of them FP at `baseline-v2`.
 - `splits.tsv` (regenerated in P5): same command as P2's (`results/evalsets/*-dev.txt`). 4,241 dev, 8,477 holdout.
+- `p7-dev.txt` (1,364 units): `core-dev.txt` ∪ `p1-dev.txt` (P7's fallback target slot is SSD, so its focus set is
+  `p1-dev.txt`). The two files are identical, so `p7-dev.txt` equals `core-dev.txt`.
+- `splits.tsv` (regenerated in P7): same command as P2's. Unchanged, 4,241 dev and 8,477 holdout.
