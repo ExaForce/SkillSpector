@@ -71,6 +71,9 @@ row per run, and one decision block per plan below the table.
 | P5 | preflight | L lure=on | 1 | `a98f3794c22f` | 8ab36a84 | `SKILLSPECTOR_EXA_LURE_RULES=on` | 1 | OK | final pair preflight: TP |
 | P5 | final | control | 1 | `0e0f9e105cf8` | 8ab36a84 | none | 12,718 | OK: dropped 8.1% (1031/12718), 0 errors | SSO expired at 9,033, resumed with `--run-id`; TP 4522 / FP 373; guard FP 86 |
 | P5 | final | L lure=on | 1 | `93c1faec5bec` | 8ab36a84 | `SKILLSPECTOR_EXA_LURE_RULES=on` | 12,718 | OK: dropped 8.4% (1064/12718), 0 errors | TP 4622 / FP 362; guard FP 79; on `M` (301): +41 TP / 0 FP -> ACCEPTED |
+| P6 | preflight | control | 1 | `7a2881fff622` | c0e4ccaa | none (lure rules on by default) | 1 | OK | `Currency__stb-case_01883`: 2 `EXA-LU*` findings with no flag set |
+| P6 | full | control | 1 | `bfa51d835e8b` | c0e4ccaa | none (current defaults) | 12,718 | OK: dropped 8.1% (1032/12718), 0 errors | TP 4641 / FP 347; replay source for the sweep |
+| P6 | replay | T = 31..61 | - | 16 synthetic runs (`2989de038a5c` .. `f450819a4738`; T = 49 `5f4044b8e40a`) | - | `--policy '{"threshold": T}'` | 12,718 | n/a (replay) | table in `results/recall-p6-offline.md` |
 
 ## P0
 
@@ -586,3 +589,26 @@ That commit also fixed lint left by the fix wave. Overview: `results/recall-p5-r
   (FPs that carry the candidate's own finding) or against the guard's own control spread.
 - **Attribution.** Count every flip in the units a candidate touches, not only units that were FN in both controls.
 - **Offline/live match gap.** 4 of 305 offline matches (2 benign, 2 malicious) get no live finding.
+
+## P6
+
+Plan: `docs/superpowers/plans/2026-10-29-recall-p6-threshold.md`. Branch `exaforce/recall-p6-threshold`, from P5's final
+commit `c0e4ccaa`.
+
+### Offline paired sweep (Task 1)
+
+- **Source:** one healthy full run on current defaults, `bfa51d835e8b`, with the lure rules on by default.
+- **Sweep:** each T in {31, 33, ..., 61} replayed with a threshold-only policy (the semantic gate is off by default).
+  Findings are identical across rows.
+- **Selection rule (P6-R2, made before any data):** the plan's filter, plus the spec's final-acceptance clauses
+  (precision ≥ P(51) − 0.005, holdout recall ≥ holdout recall at 51). The highest recall wins, and ties break toward 51.
+
+**Chosen: T = 49.**
+- Recall 0.7248 → 0.7336 (+0.0087), above the +0.5-point minimum.
+- Precision 0.9304 → 0.9264 (−0.0040).
+- TP +56 / FP +26; holdout recall +0.0038.
+- T = 47 fails the FP cap (406 > 399); T ≤ 45 fails precision 0.92.
+- The plan's rule as written picks the same T.
+- **Replication** on P5's `93c1faec5bec` (information only, P6-R6): T = 49 again, +0.0069 recall / −0.0030 precision.
+
+Detail: `results/recall-p6-offline.md`.
