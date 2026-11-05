@@ -76,7 +76,8 @@ row per run, and one decision block per plan below the table.
 | P6 | replay | T = 31..61 | - | 16 synthetic runs (`2989de038a5c` .. `f450819a4738`; T = 49 `5f4044b8e40a`) | - | `--policy '{"threshold": T}'` | 12,718 | n/a (replay) | table in `results/recall-p6-offline.md` |
 | P6 | smoke | T = 49 | 1 | `11f8b4ab54ce` | 0b018c65 | `SKILLSPECTOR_EXA_BLOCK_THRESHOLD=49` | 3 | OK | live scores 0 / 25 / 48: none in [49, 51) |
 | P6 | smoke | T = 49 | 2 | `2d55e4add55e` | 0b018c65 | `SKILLSPECTOR_EXA_BLOCK_THRESHOLD=49` | 5 | OK | live scores 23 / 61 / 21 / 100 / 58: not reproduced |
-| P6 | replay | T = 49 (final) | - | `da9c7e3e55a2` | 0b018c65 (P6 bands) | `--policy '{"threshold": 49}'` | 12,718 | n/a (replay) | TP 4697 / FP 373; the report's head run |
+| P6 | replay | T = 49 (final) | - | `da9c7e3e55a2` | 0b018c65 (P6 bands) | `--policy '{"threshold": 49}'` | 12,718 | n/a (replay) | TP 4697 / FP 373; superseded by `60503e65c287` |
+| P6 | replay | T = 49 (final, clamped) | - | `60503e65c287` | 33271de5 | `--policy '{"threshold": 49}'` | 12,718 | n/a (replay) | TP 4697 / FP 373; no score left at 49–50; the report's head run |
 
 ## P0
 
@@ -610,7 +611,7 @@ commit `c0e4ccaa`.
 - Recall 0.7248 → 0.7336 (+0.0087), above the +0.5-point minimum.
 - Precision 0.9304 → 0.9264 (−0.0040).
 - TP +56 / FP +26; holdout recall +0.0038.
-- T = 47 fails the FP cap (406 > 399); T ≤ 45 fails precision 0.92.
+- T = 47 fails the FP cap (406 > 399) and P6-R2's precision clause (0.9212 < 0.9254); T ≤ 45 fails precision 0.92.
 - The plan's rule as written picks the same T.
 - **Replication** on P5's `93c1faec5bec` (information only, P6-R6): T = 49 again, +0.0069 recall / −0.0030 precision.
 
@@ -620,10 +621,13 @@ Detail: `results/recall-p6-offline.md`.
 
 - **Flag:** `0b018c65` adds `SKILLSPECTOR_EXA_BLOCK_THRESHOLD` (range 21–80; out-of-range raises `ValueError`; a
   non-integer warns and uses the default). Replay was aligned so that bands match the classifier (P6-R3).
+- **Clamp:** `33271de5` (final review C1) lifts a blocked score to at least 51 and caps an unblocked one at 50, so the CLI
+  exit code and MCP `safe_to_install` (keyed on `score > 50`) agree. Three more upstream score-50 tests join the
+  conditional strict xfail (14 in total).
 - **Default:** `4e6863d1` makes 49 the default; `=51` restores upstream. Two upstream `tests/nodes/test_report.py` tests
   that expect score 50 to band MEDIUM are strict xfail in the root `conftest.py` while the threshold is ≤ 50 (P6-R9).
 - **Live smoke check:** not reproduced. No live score fell in [49, 51) across 8 units in 2 runs; scores at the cut move
-  25–50 points run to run.
+  2–51 points (median 26) run to run.
 
 **Final: ACCEPTED at T = 49** (paired replay; findings identical): recall +0.0087, precision −0.0040, TP +56 / FP +26,
 holdout +0.0038. Overview: `results/recall-p6-report.md`.
@@ -632,6 +636,11 @@ holdout +0.0038. Overview: `results/recall-p6-report.md`.
 
 - **Flag provenance.** Unset `SKILLSPECTOR_EXA_BLOCK_THRESHOLD` means 51 before `4e6863d1` and 49 from it. Controls needing
   the old cut set `=51`.
+- **Replay sources must be recorded at `SKILLSPECTOR_EXA_BLOCK_THRESHOLD=51`** (final re-review I1, P6-R11). At the
+  default, the stored score is clamped, so a raw 49 or 50 is stored as 51. Replay builds on stored scores, so
+  replaying such a run at another threshold, or under a policy that moves scores near the cut, gives wrong verdicts
+  without warning. At 51 the clamp changes nothing, so those runs store raw scores. `bfa51d835e8b` predates the
+  default and is safe. Longer term, the harness should store the raw score.
 - **New FPs.** 26 benign units now block, several mainstream integrations (Asana, Canva, GA4, Snowflake, MS365); `SQP-2`
   is the most common HIGH rule among them.
 - **Score pile-up at 50.** Score 50 alone holds 66 units. Find why scores cluster just under 51 (suspect: the

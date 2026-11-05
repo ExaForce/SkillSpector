@@ -1,7 +1,9 @@
 # P6 overview: re-tuned block threshold
 
 **Verdict: ACCEPTED at T = 49.** Units scoring 49 or 50 now block. `SKILLSPECTOR_EXA_BLOCK_THRESHOLD` is 49 by default
-from `4e6863d1`, and `=51` restores upstream behaviour.
+from `4e6863d1`, and `=51` restores upstream behaviour. From `33271de5`, a blocked unit's reported score is lifted to at
+least 51, and an unblocked one is capped at 50. So the CLI exit code and the MCP `safe_to_install` field, which both
+key on `score > 50`, agree with the recommendation (final review C1).
 
 | T | Δrecall | Δprecision | ΔTP | ΔFP | holdout Δrecall |
 |---|---|---|---|---|---|
@@ -9,7 +11,7 @@ from `4e6863d1`, and `=51` restores upstream behaviour.
 
 **Paired replay: zero nondeterminism; findings identical.**
 - **Source:** the full run `bfa51d835e8b` on current defaults (2026-11-05, `c0e4ccaa`, healthy: 8.1% dropped, 0 errors).
-- **Treatment:** `da9c7e3e55a2`, a replay of the same run at T = 49 with the P6 band semantics. It matches the sweep run
+- **Treatment:** `60503e65c287`, a replay of the same run at T = 49 with the final P6 semantics (clamped score). It matches the sweep run
   `5f4044b8e40a` in TP and FP.
 
 1. **Selection (pre-registered; P6-R2).** The sweep over T ∈ {31, 33, ..., 61} is in `results/recall-p6-offline.md`.
@@ -17,7 +19,7 @@ from `4e6863d1`, and `=51` restores upstream behaviour.
      final-acceptance clauses (precision ≥ P(51) − 0.005, holdout Δrecall ≥ 0).
    - **Result:** T = 49 has the highest recall that passes, under both the plan's rule as written and P6-R2. It clears
      the +0.5-point minimum.
-   - **Nearest rejects:** T = 47 fails the FP cap (406 > 399), and T ≤ 45 fails precision 0.92.
+   - **Nearest rejects:** T = 47 fails the FP cap (406 > 399) and P6-R2's precision clause (0.9212 < 0.9254), and T ≤ 45 fails precision 0.92.
 2. **What moves.** Only units scored 49 or 50, 82 in this run: 56 malicious (FN→TP) and 26 benign (TN→FP). That is about
    2.2 TP per FP.
    - **Slices:** non-STB recall +0.017; SkillTrustBench +0.003; label tiers `working` +0.021, `intent` +0.012,
@@ -44,9 +46,9 @@ from `4e6863d1`, and `=51` restores upstream behaviour.
      units that scored 49–50 in the source run. Both runs were healthy with no errors, so the flag is wired into the live
      pipeline.
    - **Result:** no live score landed in [49, 51). The 8 units scored 0, 25, 48, 23, 61, 21, 100 and 58, so a unit's
-     score near the cut moves 25–50 points from run to run.
-   - **Coverage:** the logic is covered by unit and parity tests. Replay at T = 49 writes band `HIGH` and
-     `DO_NOT_INSTALL` for all 82 units in [49, 51).
+     score near the cut moves 2–51 points (median 26) from run to run.
+   - **Coverage:** the logic is covered by unit and parity tests. Replay at T = 49 lifts all 82 units scored
+     49–50 to score 51, band `HIGH`, `DO_NOT_INSTALL`, and no unit is left at 49 or 50.
 6. **Cumulative against `baseline-v2`** (P0, confounded by drift): recall 0.712 → 0.734 (+0.022), precision 0.931 →
    0.926 (−0.005), holdout recall 0.873 → 0.879.
 7. **Caveats.**
@@ -61,11 +63,24 @@ from `4e6863d1`, and `=51` restores upstream behaviour.
 
 - **Flag provenance.** Unset `SKILLSPECTOR_EXA_BLOCK_THRESHOLD` means 51 before `4e6863d1` and 49 from it. `arms` and
   resume pinning compare env values only. Controls that need the old cut must set `=51` explicitly. Replay's `Policy()`
-  stays 51, the upstream scorer.
-- **Two upstream tests are inverted by design.** `tests/nodes/test_report.py::TestReportNode::test_report_critical_finding_medium_band`
-  and `::test_report_doc_findings_no_multiplier` expect score 50 to band MEDIUM. They are strict xfail in the fork's root
-  `conftest.py` while the effective threshold is 50 or below, and documented in
-  `docs/superpowers/EXPECTED_TEST_FAILURES.md` (P6-R9).
+  stays 51, the upstream scorer, so replaying a run made at the new default needs `{"threshold": 49}` to reproduce
+  its verdicts. `rulelab` also keeps its 51 cut (`RISK_THRESHOLD = 50`), so P5's offline results stay reproducible. A
+  plan that replays at the shipped default must pass the cut explicitly.
+- **Replay sources must be recorded at `SKILLSPECTOR_EXA_BLOCK_THRESHOLD=51`** (final re-review I1, P6-R11). At the
+  default, the stored score is clamped, so a raw 49 or 50 is stored as 51. Replay builds on stored scores, so
+  replaying such a run at another threshold, or under a policy that moves scores near the cut, gives wrong verdicts
+  without warning. At 51 the clamp changes nothing, so those runs store raw scores. `bfa51d835e8b` predates the
+  default and is safe. Longer term, the harness should store the raw score.
+- **Five upstream tests are inverted by design.** In `tests/nodes/test_report.py`:
+  - `TestReportNode::test_report_critical_finding_medium_band` and `test_report_doc_findings_no_multiplier` expect a
+    score of 50 to band MEDIUM;
+  - `TestComputeRiskScoreBasic::test_single_finding_full_confidence_scores_base_points[CRITICAL-50]`,
+    `test_report_baseline_keeps_unmatched_finding` and `test_report_no_baseline_unchanged` expect a raw score of 50,
+    which the clamp now lifts to 51.
+
+  All five are strict xfail in the fork's root `conftest.py` while the effective threshold is 50 or below, calibrated
+  for 49 and 51. They are documented in `docs/superpowers/EXPECTED_TEST_FAILURES.md` (P6-R9). The root suite now
+  reports 14 xfailed.
 - **The score-50 mass is a scoring artefact worth explaining.** Score 50 alone holds 43 malicious and 23 benign units in
   the source run, the biggest single-score mass between 41 and 52. P5 found static HIGH findings landing at 43–47. A plan
   that finds why scores pile up just under 51 (the fork's "meta-analyzer verdict over static severity" patch is the
@@ -78,23 +93,23 @@ from `4e6863d1`, and `=51` restores upstream behaviour.
   - the parity test has duplicate helpers;
   - small cleanups in `_apply_threshold`.
 
-<!-- spec report 1: uv run report results/recall.duckdb da9c7e3e55a2 --base bfa51d835e8b -->
-## SkillSpector benchmark: `p6 full control (current defaults)` → `p6 replay of bfa51d835e8b at T=49 (final, P6 bands)`
+<!-- spec report 1: uv run report results/recall.duckdb 60503e65c287 --base bfa51d835e8b -->
+## SkillSpector benchmark: `p6 full control (current defaults)` → `p6 replay of bfa51d835e8b at T=49 (final, clamped)`
 
 🟢 **Net +30** classifications improved over the 12718 unit(s) both runs scanned — 56 fixed, 26 regressed.
 
-<sub>base = baseline, head = candidate. Δ = head − base; ▲ better, ▼ worse. Generated 2026-11-05 16:58 UTC from `results/recall.duckdb`.</sub>
+<sub>base = baseline, head = candidate. Δ = head − base; ▲ better, ▼ worse. Generated 2026-11-05 17:37 UTC from `results/recall.duckdb`.</sub>
 
 ### Run configuration
 
-| | base · `p6 full control (current defaults)` | head · `p6 replay of bfa51d835e8b at T=49 (final, P6 bands)` |
+| | base · `p6 full control (current defaults)` | head · `p6 replay of bfa51d835e8b at T=49 (final, clamped)` |
 |---|---|---|
-| run id | `bfa51d835e8b` | `da9c7e3e55a2` |
-| description | p6 full control (current defaults) | p6 replay of bfa51d835e8b at T=49 (final, P6 bands) |
+| run id | `bfa51d835e8b` | `60503e65c287` |
+| description | p6 full control (current defaults) | p6 replay of bfa51d835e8b at T=49 (final, clamped) |
 | model | nvidia.nemotron-super-3-120b | nvidia.nemotron-super-3-120b |
 | LLM | on | on |
 | units (total) | 12,718 | 12,718 |
-| started | 2026-11-05 09:53 | 2026-11-05 10:58 |
+| started | 2026-11-05 09:53 | 2026-11-05 11:37 |
 | workers | 96 | 96 |
 
 ### Health
@@ -102,7 +117,7 @@ from `4e6863d1`, and `=51` restores upstream behaviour.
 | run | health |
 |---|---|
 | base · `p6 full control (current defaults)` | Health: OK |
-| head · `p6 replay of bfa51d835e8b at T=49 (final, P6 bands)` | Health: OK |
+| head · `p6 replay of bfa51d835e8b at T=49 (final, clamped)` | Health: OK |
 
 ### Outcomes
 
@@ -335,23 +350,23 @@ Per-dimension breakdown across both runs: sample size (`n`), false positives, fa
 </details>
 
 
-<!-- spec report 2: uv run report results/recall.duckdb da9c7e3e55a2 --base e16e394f65c3 --split-file results/evalsets/splits.tsv -->
-## SkillSpector benchmark: `baseline-v2: P0 tree, tags recorded` → `p6 replay of bfa51d835e8b at T=49 (final, P6 bands)`
+<!-- spec report 2: uv run report results/recall.duckdb 60503e65c287 --base e16e394f65c3 --split-file results/evalsets/splits.tsv -->
+## SkillSpector benchmark: `baseline-v2: P0 tree, tags recorded` → `p6 replay of bfa51d835e8b at T=49 (final, clamped)`
 
 🟢 **Net +103** classifications improved over the 12718 unit(s) both runs scanned — 552 fixed, 449 regressed.
 
-<sub>base = baseline, head = candidate. Δ = head − base; ▲ better, ▼ worse. Generated 2026-11-05 16:58 UTC from `results/recall.duckdb`.</sub>
+<sub>base = baseline, head = candidate. Δ = head − base; ▲ better, ▼ worse. Generated 2026-11-05 17:37 UTC from `results/recall.duckdb`.</sub>
 
 ### Run configuration
 
-| | base · `baseline-v2: P0 tree, tags recorded` | head · `p6 replay of bfa51d835e8b at T=49 (final, P6 bands)` |
+| | base · `baseline-v2: P0 tree, tags recorded` | head · `p6 replay of bfa51d835e8b at T=49 (final, clamped)` |
 |---|---|---|
-| run id | `e16e394f65c3` | `da9c7e3e55a2` |
-| description | baseline-v2: P0 tree, tags recorded | p6 replay of bfa51d835e8b at T=49 (final, P6 bands) |
+| run id | `e16e394f65c3` | `60503e65c287` |
+| description | baseline-v2: P0 tree, tags recorded | p6 replay of bfa51d835e8b at T=49 (final, clamped) |
 | model | nvidia.nemotron-super-3-120b | nvidia.nemotron-super-3-120b |
 | LLM | on | on |
 | units (total) | 12,718 | 12,718 |
-| started | 2026-11-02 08:12 | 2026-11-05 10:58 |
+| started | 2026-11-02 08:12 | 2026-11-05 11:37 |
 | workers | 96 | 96 |
 
 ### Health
@@ -359,7 +374,7 @@ Per-dimension breakdown across both runs: sample size (`n`), false positives, fa
 | run | health |
 |---|---|
 | base · `baseline-v2: P0 tree, tags recorded` | Health: OK |
-| head · `p6 replay of bfa51d835e8b at T=49 (final, P6 bands)` | Health: OK |
+| head · `p6 replay of bfa51d835e8b at T=49 (final, clamped)` | Health: OK |
 
 ### Outcomes
 

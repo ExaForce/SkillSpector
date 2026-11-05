@@ -43,7 +43,7 @@ not committed.
   - precision 0.9304 → 0.9264 (−0.0040, within −0.005);
   - TP +56 and FP +26;
   - holdout recall +0.0038.
-- **T = 47 fails** the FP cap (406 > 399).
+- **T = 47 fails** the FP cap (406 > 399) and P6-R2's precision clause (0.9212 < 0.9254).
 - **T ≤ 45 fails** precision 0.92.
 - **T > 51** only loses recall.
 
