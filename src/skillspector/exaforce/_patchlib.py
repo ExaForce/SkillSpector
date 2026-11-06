@@ -41,6 +41,32 @@ def pop_field_validator(model: type[BaseModel], validator_name: str) -> None:
     model.__pydantic_decorators__.field_validators.pop(validator_name, None)
 
 
+def _guarded_target(
+    module: ModuleType, attr: str, expected_params: tuple[str, ...]
+) -> Callable | None:
+    """Return the module-global callable ``attr`` after drift checks.
+
+    Returns ``None`` if it is already wrapped (callers treat that as a no-op).
+    Raises ``PatchDriftError`` if it is missing, not callable, or lacks a param.
+    """
+    target = getattr(module, attr, None)
+    if target is None or not callable(target):
+        raise PatchDriftError(
+            f"{module.__name__}.{attr} is missing or not callable; "
+            "upstream changed — update the exaforce patch."
+        )
+    if getattr(target, "_exaforce_wrapped", False):
+        return None
+    params = inspect.signature(target).parameters
+    for name in expected_params:
+        if name not in params:
+            raise PatchDriftError(
+                f"{module.__name__}.{attr} has no parameter {name!r}; "
+                "upstream changed — update the exaforce patch."
+            )
+    return target
+
+
 def wrap_module_callable(
     module: ModuleType,
     attr: str,
@@ -59,25 +85,39 @@ def wrap_module_callable(
     that silently stops matching. Re-wrapping an already-wrapped callable is a
     no-op, keeping :func:`apply` idempotent.
     """
-    target = getattr(module, attr, None)
-    if target is None or not callable(target):
-        raise PatchDriftError(
-            f"{module.__name__}.{attr} is missing or not callable; "
-            "upstream changed — update the exaforce patch."
-        )
-    if getattr(target, "_exaforce_wrapped", False):
+    target = _guarded_target(module, attr, expected_params)
+    if target is None:
         return
-    params = inspect.signature(target).parameters
-    for name in expected_params:
-        if name not in params:
-            raise PatchDriftError(
-                f"{module.__name__}.{attr} has no parameter {name!r}; "
-                "upstream changed — update the exaforce patch."
-            )
 
     @functools.wraps(target)
     def wrapper(*args: object, **kwargs: object) -> object:
         return transform(target(*args, **kwargs))
+
+    wrapper._exaforce_wrapped = True  # type: ignore[attr-defined]
+    setattr(module, attr, wrapper)
+
+
+def intercept_module_callable(
+    module: ModuleType,
+    attr: str,
+    interceptor: Callable[[Callable, tuple, dict], object],
+    *,
+    expected_params: tuple[str, ...] = (),
+) -> None:
+    """Replace module-global callable ``attr`` with one that sees its call arguments.
+
+    The wrapper calls ``interceptor(original, args, kwargs)`` and returns its
+    result, so the interceptor may inspect arguments, call ``original``, and
+    substitute the result. Same drift guards and idempotence marker as
+    :func:`wrap_module_callable`.
+    """
+    target = _guarded_target(module, attr, expected_params)
+    if target is None:
+        return
+
+    @functools.wraps(target)
+    def wrapper(*args: object, **kwargs: object) -> object:
+        return interceptor(target, args, kwargs)
 
     wrapper._exaforce_wrapped = True  # type: ignore[attr-defined]
     setattr(module, attr, wrapper)

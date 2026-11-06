@@ -9,7 +9,7 @@ runs in a DB into a PR-ready markdown summary.
 
 Usage:
     benchmark /path/to/MalSkillBench/Dataset
-    benchmark .../Dataset/Skills/malware --limit 50 --workers 8
+    benchmark .../Dataset/Skills/malware --limit 50 --workers 16
     benchmark .../Dataset --no-llm                       # static analysis only
     benchmark .../Dataset -o out.duckdb --run-id abc123   # extend run abc123
     report out.duckdb <run>                    # single-run summary
@@ -20,10 +20,13 @@ Usage:
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import pathlib
 import sys
 import uuid
+from collections.abc import Mapping
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import UTC, datetime
 from types import SimpleNamespace
@@ -31,9 +34,11 @@ from types import SimpleNamespace
 import click
 from tqdm import tqdm
 
-from .config import SCAN_TIMEOUT_SECONDS, configure_run
+from .config import SCAN_TIMEOUT_SECONDS, configure_run, default_workers
 from .dataset_handler import discover
 from .db import (
+    config_snapshot,
+    current_git_sha,
     delete_runs,
     open_db,
     print_summary,
@@ -63,6 +68,13 @@ from .utils import quiet_logging
     "timeouts, and errors) -- a fast check of whether a change fixes them.",
 )
 @click.option(
+    "--units-file",
+    type=click.Path(exists=True, dir_okay=False),
+    help="scan only the units listed in this file (one unit_path per line; '#' comments "
+    "and blank lines ignored). Works with DATASET_PATH or --from-run; file order is kept. "
+    "Cannot be combined with --failures-only.",
+)
+@click.option(
     "--dataset",
     help="with --from-run, override the dataset path recorded for the source run "
     "(use if the MalSkillBench checkout has moved).",
@@ -75,7 +87,9 @@ from .utils import quiet_logging
     "--run-id",
     help="extend an existing run instead of starting a new one: re-scan only "
     "its unfinished units and append into the same run (requires -o pointing "
-    "at the DB that holds it). Default: every invocation is a new run.",
+    "at the DB that holds it). Refused when SKILLSPECTOR_EXA_*, SKILLSPECTOR_MODEL/"
+    "PROVIDER, MODEL_OVERRIDE or --units-file differ from what the run recorded. "
+    "Default: every invocation is a new run.",
 )
 @click.option("--no-llm", is_flag=True, help="static analysis only (no LLM)")
 @click.option(
@@ -94,7 +108,13 @@ from .utils import quiet_logging
     help="cap units PER GROUP (a unit's parent directory, e.g. Skills/malware "
     "vs Skills/benign); 0 = no cap",
 )
-@click.option("--workers", type=int, default=8, show_default=True, help="concurrent scan processes")
+@click.option(
+    "--workers",
+    type=click.IntRange(min=1),
+    default=None,
+    help="concurrent scan processes (default: sized from this machine's RAM and CPUs, "
+    "capped at 96). Lower it if the summary reports scans that lost LLM calls.",
+)
 @click.option(
     "--max-tasks-per-child",
     type=int,
@@ -170,7 +190,110 @@ def _load_run_spec(
         con.close()
 
 
+def read_units_file(path: str | os.PathLike) -> list[str]:
+    """Read unit_paths, one per line; skip blanks and ``#`` comments; dedupe keeping order."""
+    seen: dict[str, None] = {}
+    for line in pathlib.Path(path).read_text().splitlines():
+        line = line.strip()
+        if line and not line.startswith("#"):
+            seen.setdefault(line, None)
+    return list(seen)
+
+
+def select_units(units: list, wanted: list[str]) -> tuple[list, int]:
+    """Pick the units named in ``wanted`` (unit_path), in ``wanted`` order.
+
+    Returns (selected, number of wanted paths not present in ``units``).
+    """
+    by_path = {u.unit_path: u for u in units}
+    selected = [by_path[p] for p in wanted if p in by_path]
+    return selected, len(wanted) - len(selected)
+
+
+def print_units_file_selection(selected: int, missing: int) -> None:
+    print(f"--units-file: selected {selected} units ({missing} not found)")
+
+
+# Env that changes what a scan decides: a resumed run must see exactly what it started with.
+# Other recorded env (log level, auth wait, ...) may differ between sessions.
+_RESUME_PINNED_PREFIX = "SKILLSPECTOR_EXA_"
+_RESUME_PINNED_ENV = frozenset({"SKILLSPECTOR_MODEL", "SKILLSPECTOR_PROVIDER", "MODEL_OVERRIDE"})
+
+
+def units_file_record(path: str | os.PathLike | None) -> dict | None:
+    """``{"path": <resolved path>, "sha256": <hex of its bytes>}``, or None without a file."""
+    if not path:
+        return None
+    p = pathlib.Path(path).resolve()
+    return {"path": str(p), "sha256": hashlib.sha256(p.read_bytes()).hexdigest()}
+
+
+def run_config_json(
+    environ: Mapping[str, str], git_sha: str, units_file: str | os.PathLike | None
+) -> str:
+    """``runs.config_json``: :func:`config_snapshot` plus the ``units_file`` record."""
+    cfg = json.loads(config_snapshot(environ, git_sha))
+    cfg["units_file"] = units_file_record(units_file)
+    return json.dumps(cfg)
+
+
+def _show_env(v: str | None) -> str:
+    return "(unset)" if v is None else repr(v)
+
+
+def _show_units_file(rec: dict | None) -> str:
+    return "(none)" if rec is None else f"{rec.get('path')} (sha256 {rec.get('sha256')})"
+
+
+def resume_config_mismatches(stored_json: str, current_json: str) -> list[str]:
+    """What differs between a run's recorded config and this invocation's, as "name: old -> new".
+
+    Compared: env vars named ``SKILLSPECTOR_EXA_*``, ``SKILLSPECTOR_MODEL``,
+    ``SKILLSPECTOR_PROVIDER`` and ``MODEL_OVERRIDE`` (unset vs set counts as different), and
+    the ``units_file`` record (a config without the key counts as no units file). Nothing
+    else (git sha, other env) is compared.
+    """
+    stored, current = json.loads(stored_json), json.loads(current_json)
+    old_env, new_env = stored.get("env") or {}, current.get("env") or {}
+    out = [
+        f"{k}: {_show_env(old_env.get(k))} -> {_show_env(new_env.get(k))}"
+        for k in sorted(set(old_env) | set(new_env))
+        if (k.startswith(_RESUME_PINNED_PREFIX) or k in _RESUME_PINNED_ENV)
+        and old_env.get(k) != new_env.get(k)
+    ]
+    old_uf, new_uf = stored.get("units_file"), current.get("units_file")
+    if old_uf != new_uf:
+        out.append(f"units_file: {_show_units_file(old_uf)} -> {_show_units_file(new_uf)}")
+    return out
+
+
+def verify_resume_config(con, run_id: str, current_json: str) -> None:
+    """Refuse (``click.UsageError``) to extend ``run_id`` under different flags or units file.
+
+    A run recorded before ``config_json`` existed cannot be checked: warn and carry on.
+    """
+    row = con.execute("SELECT config_json FROM runs WHERE run_id = ?", [run_id]).fetchone()
+    stored = row[0] if row else None
+    if stored is None:
+        print(
+            f"WARNING: run {run_id} has no recorded config_json; cannot verify that this "
+            "resume uses the same SKILLSPECTOR_EXA_* flags, model and --units-file."
+        )
+        return
+    mismatches = resume_config_mismatches(stored, current_json)
+    if mismatches:
+        raise click.UsageError(
+            f"refusing to extend run {run_id}: this invocation differs from what the run "
+            "recorded (old -> new):\n  "
+            + "\n  ".join(mismatches)
+            + "\nRe-export the run's env flags and pass the same --units-file, "
+            "or omit --run-id to start a new run."
+        )
+
+
 def _run_benchmark(args: SimpleNamespace) -> int:
+    if getattr(args, "units_file", None) and args.failures_only:
+        raise click.UsageError("--failures-only cannot be combined with --units-file")
     if bool(args.dataset_path) == bool(args.from_run):
         print("ERROR: pass either a DATASET_PATH or --from-run <run_id> (exactly one)")
         return 2
@@ -191,6 +314,9 @@ def _run_benchmark(args: SimpleNamespace) -> int:
     if args.dataset and not args.from_run:
         print("ERROR: --dataset only applies with --from-run")
         return 2
+
+    if args.workers is None:
+        args.workers = default_workers()
 
     gen_id = uuid.uuid4().hex[:12]
     out_path = pathlib.Path(args.output or f"benchmark_{gen_id}.duckdb").resolve()
@@ -236,6 +362,10 @@ def _run_benchmark(args: SimpleNamespace) -> int:
         units = [u for u in units if u.category in selected]
         if dropped:
             print(f"excluded {dropped} unit(s) outside --categories={args.categories}")
+
+    if getattr(args, "units_file", None):
+        units, missing = select_units(units, read_units_file(args.units_file))
+        print_units_file_selection(len(units), missing)
 
     if args.limit:
         per_group: dict[str, int] = {}
@@ -283,9 +413,15 @@ def _run_benchmark(args: SimpleNamespace) -> int:
     os.environ["SKILLSPECTOR_BENCH_AUTH_WAIT"] = str(args.auth_wait_seconds)
     cfg, provider, model, region = configure_run(args.no_llm, args.timeout)
 
+    run_config = run_config_json(os.environ, current_git_sha(), getattr(args, "units_file", None))
     con, done, extending = open_db(out_path, args.run_id)
     if extending:
         run_id = args.run_id
+        try:
+            verify_resume_config(con, run_id, run_config)
+        except click.UsageError:
+            con.close()
+            raise
         purge_incomplete(con, run_id)
         units_to_scan = [u for u in units if u.unit_path not in done]
         print(
@@ -295,7 +431,9 @@ def _run_benchmark(args: SimpleNamespace) -> int:
         run_id = gen_id
         print(f"starting run {run_id}")
         con.execute(
-            "INSERT INTO runs VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO runs (run_id, started_at, finished_at, dataset_path, provider, model, "
+            "region, use_llm, workers, sample_limit, description, config_json) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
             [
                 run_id,
                 datetime.now(UTC),
@@ -308,6 +446,7 @@ def _run_benchmark(args: SimpleNamespace) -> int:
                 args.workers,
                 args.limit or None,
                 args.description,
+                run_config,
             ],
         )
         units_to_scan = units
@@ -393,7 +532,12 @@ def _run_benchmark(args: SimpleNamespace) -> int:
     default=None,
     help="max regression/fix rows to list, comparison only (default: 25)",
 )
-def report(db_path, run, base, output, label, base_label, top):
+@click.option(
+    "--split-file",
+    type=click.Path(exists=True, dir_okay=False, path_type=pathlib.Path),
+    help="TSV of unit_path<TAB>split; adds a per-split section (unlisted units: unassigned)",
+)
+def report(db_path, run, base, output, label, base_label, top, split_file):
     """Summarize a benchmark run, or compare it against a base run.
 
     DB_PATH is a benchmark DuckDB and RUN is a run id in it (a unique prefix is
@@ -417,6 +561,7 @@ def report(db_path, run, base, output, label, base_label, top):
             db_path=db_path,
             generated_at=datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC"),
             top=DEFAULT_TOP if top is None else top,
+            split_file=split_file,
         )
     finally:
         con.close()

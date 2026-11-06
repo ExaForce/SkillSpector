@@ -7,9 +7,12 @@ comparison. The CLI wiring lives in ``benchmark.main`` (the ``report`` command).
 
 from __future__ import annotations
 
+import pathlib
+
 from ..db import resolve_run_id
 from .compare import DEFAULT_TOP, compare
 from .data import load_run
+from .extras import load_extras
 from .render import render_report, render_summary
 
 
@@ -23,12 +26,14 @@ def build_report(
     db_path: str = "",
     generated_at: str = "",
     top: int = DEFAULT_TOP,
+    split_file: pathlib.Path | None = None,
 ) -> str:
     run = resolve_run_id(con, run)
     head = load_run(con, run)
     if base is None:
         return render_summary(
             head,
+            load_extras(con, run, split_file),
             label=label or (head.description or head.run_id[:12]),
             db_path=db_path,
             generated_at=generated_at,
@@ -42,6 +47,8 @@ def build_report(
         base_report,
         head,
         comparison,
+        load_extras(con, base, split_file),
+        load_extras(con, run, split_file),
         label_base=base_label or (base_report.description or base_report.run_id[:12]),
         label_head=label or (head.description or head.run_id[:12]),
         db_path=db_path,

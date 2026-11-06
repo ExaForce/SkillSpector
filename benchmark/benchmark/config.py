@@ -12,8 +12,23 @@ PROVIDER = "openai"
 MODEL_ID = "nvidia.nemotron-super-3-120b"
 SCAN_TIMEOUT_SECONDS = 300
 
+# Auto --workers sizing, measured 2026-10-26 on a 48 GB / 16-core Mac: a scan peaks
+# ~150 MB RSS (the largest units ~1 GB) and 96 workers use ~5 cores. Above ~96,
+# Bedrock starts queueing calls (p99 wait 46s at 128) and throughput drops.
+WORKER_RAM_BUDGET_BYTES = 256 * 2**20
+WORKERS_PER_CPU = 6
+MAX_AUTO_WORKERS = 96
+
 # SkillSpector's own "do not install" verdict == this recommendation string.
 MALICIOUS_RECOMMENDATION = "DO_NOT_INSTALL"
+
+
+def default_workers() -> int:
+    """Scan processes this machine can run: the tighter of the RAM and CPU caps."""
+    ram = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
+    by_ram = ram // 2 // WORKER_RAM_BUDGET_BYTES
+    by_cpu = (os.cpu_count() or 1) * WORKERS_PER_CPU
+    return max(1, min(by_ram, by_cpu, MAX_AUTO_WORKERS))
 
 
 def bedrock_base_url(region: str) -> str:

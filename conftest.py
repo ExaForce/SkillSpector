@@ -26,6 +26,18 @@ which does invert one of them — marked conditionally below, so the run stays
 green and strictly checked in that mode too. Fork-side coverage lives in
 ``tests/exaforce/test_patches.py``.
 
+``exaforce/_analyzer_registry`` appends fork analyzers to ``ANALYZER_NODE_IDS``
+on every import, so upstream's exact-list registry assertion is inverted in all
+modes.
+
+``exaforce/_score_patches`` defaults the block threshold to 51 (upstream's cut), so
+it needs no entry by default. Under the opt-in ``SKILLSPECTOR_EXA_BLOCK_THRESHOLD=49``
+a score of 50 bands HIGH / ``DO_NOT_INSTALL`` where upstream's ``test_report`` tests
+expect MEDIUM / ``CAUTION``, and the score is clamped to 51 (a block) where they expect
+50. Marked conditionally below, only while the effective threshold
+(``block_threshold()``) is <= 50. The entries are calibrated for 49 and for the
+default 51 (unmarked, passes); other values are not guaranteed green.
+
 Keep this list in sync with ``docs/superpowers/EXPECTED_TEST_FAILURES.md``.
 """
 
@@ -43,6 +55,11 @@ _NO_FLOOR_REASON = (
     "including LLM-backed ones; upstream asserts the floor"
 )
 
+_ANALYZER_REGISTRY_REASON = (
+    "exaforce _analyzer_registry appends fork analyzers (exaforce_lure_rules) to "
+    "ANALYZER_NODE_IDS; upstream asserts the fixed upstream list"
+)
+
 _SCHEMA_PRUNING = (
     "tests/nodes/test_llm_analyzer_base.py::TestLLMAnalysisResult::test_to_finding",
     "tests/nodes/test_llm_analyzer_base.py::TestLLMAnalysisResult::test_model_dump",
@@ -51,20 +68,44 @@ _SCHEMA_PRUNING = (
     "::test_malicious_skill_findings_preserve_metadata",
 )
 
+_ANALYZER_REGISTRY = (
+    "tests/nodes/analyzers/test_registry.py::TestAnalyzerRegistry"
+    "::test_analyzer_node_ids_match_expected",
+)
+
 # Only inverted by the fully-empty floor; passes under "semantic" and "upstream".
 _NO_FLOOR_ONLY = (
     "tests/nodes/test_llm_analyzer_base.py::TestApplyFilterSeverityFloor"
     "::test_critical_unconfirmed_kept_with_llm_unconfirmed_tag",
 )
 
+_BLOCK_THRESHOLD_REASON = (
+    "SKILLSPECTOR_EXA_BLOCK_THRESHOLD=49 (opt-in) blocks at 49, so a score of 50 "
+    "bands HIGH/DO_NOT_INSTALL (score lifted to 51); upstream asserts 50, MEDIUM/CAUTION"
+)
+
+# Only inverted while the effective block threshold is <= 50.
+_BLOCK_THRESHOLD_ONLY = (
+    "tests/nodes/test_report.py::TestReportNode::test_report_critical_finding_medium_band",
+    "tests/nodes/test_report.py::test_report_doc_findings_no_multiplier",
+    "tests/nodes/test_report.py::TestComputeRiskScoreBasic"
+    "::test_single_finding_full_confidence_scores_base_points[CRITICAL-50]",
+    "tests/nodes/test_report.py::test_report_baseline_keeps_unmatched_finding",
+    "tests/nodes/test_report.py::test_report_no_baseline_unchanged",
+)
+
 
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
     """Attach ``xfail(strict=True)`` to the upstream tests the fork patches invert."""
     from skillspector.exaforce._filter_patches import resolve_mode
+    from skillspector.exaforce._score_patches import block_threshold
 
     expected = dict.fromkeys(_SCHEMA_PRUNING, _SCHEMA_PRUNING_REASON)
+    expected.update(dict.fromkeys(_ANALYZER_REGISTRY, _ANALYZER_REGISTRY_REASON))
     if resolve_mode() == "none":
         expected.update(dict.fromkeys(_NO_FLOOR_ONLY, _NO_FLOOR_REASON))
+    if block_threshold() <= 50:
+        expected.update(dict.fromkeys(_BLOCK_THRESHOLD_ONLY, _BLOCK_THRESHOLD_REASON))
     for item in items:
         reason = expected.get(item.nodeid)
         if reason is not None:

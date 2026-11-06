@@ -35,7 +35,7 @@ Or from inside this directory:
 cd benchmark
 uv run benchmark /path/to/MalSkillBench/Dataset
 uv run benchmark .../Dataset/Prompts/indirect-injection -o out.duckdb
-uv run benchmark .../Dataset/Skills/malware --limit 50 --workers 8
+uv run benchmark .../Dataset/Skills/malware --limit 50 --workers 16
 uv run benchmark .../Dataset --no-llm        # static analysis only
 ```
 
@@ -70,7 +70,7 @@ uv run remove-run results.duckdb ab12 9f3 c7 --yes   # several at once, no promp
 | `--no-llm` | static analysis only (no LLM calls) |
 | `--categories` | comma-separated unit categories to scan; default `skill,code`. **Prompts are excluded by default** — they're raw prompt-injection samples, not the repo config files this tool classifies (PI embedded in a skill is still covered via the `skill` units). Pass `--categories skill,code,prompt` to include them. |
 | `--limit N` | cap units **per group** — a unit's parent directory (e.g. `--limit 20` on `Dataset/Skills` keeps 20 from `Skills/malware` *and* 20 from `Skills/benign`); 0 = no cap |
-| `--workers N` | concurrent scan processes (default 8) |
+| `--workers N` | concurrent scan processes; default is sized from the machine (half the RAM at 256 MB per worker, 6 per CPU, capped at 96 -- 96 on a 48 GB / 16-core Mac). Measured steady-state on the same units: 32 workers ~2 units/s, 64 ~2.6-3.0, 96 ~3.7, 128 ~3.1 -- past ~96 Bedrock queues calls (p99 wait ~46s) and slow scans approach `--timeout`. If the run summary reports scans that **lost LLM calls**, the provider is throttling: lower it. |
 | `--run-id` | extend an existing run instead of starting a new one (requires `-o`); re-scans only its unfinished units and appends into the same run |
 | `--from-run` | re-scan the units of a previous run instead of a `DATASET_PATH` (requires `-o`; reads that run from the `-o` DB and appends a new run there). Omit the positional path. |
 | `--failures-only` | with `--from-run`, re-scan only that run's **failed** units (FN, FP, timeouts, and errors) |
@@ -82,6 +82,10 @@ uv run remove-run results.duckdb ab12 9f3 c7 --yes   # several at once, no promp
 Every invocation is a **new run** by default (multiple runs coexist in one DB).
 To extend an interrupted run, re-run with `--run-id <id>` (printed when the run
 is created): already-classified units are skipped and only failures re-scanned.
+The resume is refused when its `SKILLSPECTOR_EXA_*` flags, `SKILLSPECTOR_MODEL`,
+`SKILLSPECTOR_PROVIDER`, `MODEL_OVERRIDE` or `--units-file` (path and sha256) differ from
+what the run recorded in `runs.config_json`; re-export the same env and pass the same
+`--units-file`. Runs recorded without `config_json` resume with a warning.
 
 ### Re-checking a previous run
 
@@ -146,6 +150,90 @@ CTE at the top to target a different run or span all of them.
 | `12_scan_timing.sql` | Timing percentiles + slowest scans |
 | `13_label_coverage.sql` | How ground-truth labels were resolved (bounds trust in 03/05) |
 | `14_top_rules.sql` | Which rules fire, on malicious vs benign (false-positive drivers) |
+
+## Screening a candidate (`screen`)
+
+`uv run screen` rejects a failing dev-arm candidate early. It splits a units file into stratified batches of about 150
+units (no unit repeats; seed 29), scans one batch at a time with the `benchmark` command as a subprocess, pairs
+treatment with same-day control on every unit judged so far, and applies the pre-registered futility boundary from the
+spec (`docs/superpowers/specs/2026-10-29-recall-improvement-program.md`, "Sequential futility screen"). It stops only to
+reject; it never accepts. A candidate that passes goes on to the standard dev verdict with `arms`.
+
+The recall-kind rule (v2) projects the final dev verdict from the units judged so far. Per judged unit it takes
+`dtp`, `dfp` and `g = dtp − 8·dfp` (treatment minus control mean), projects each dev-set total as `F = N·mean` with
+`SD = sd·½·(sqrt(N(N−n)/n) + sqrt(N(N+n)/n))`, and after at least 3 batches stops when either the TP clause
+`F_dtp + z·SD_dtp < 2·N_TP` holds, or both FP conditions `F_g + z·SD_g < 0` and `F_dfp − z·SD_dfp > N_FP` hold.
+`N_TP`/`N_FP` are `arms`' noise floors over the reused control runs when `--control-runs` names at least 2 replicates
+(TP/FP totals over the units file). Otherwise (per-batch control, or 1 control replicate) the screen runs in floors
+mode: `N_TP = 3`, N_FP is unknown, and the FP clause is off, so only the TP clause can stop. The floor is conservative
+for the TP clause only; a floor `N_FP = 2` would make FP stops too easy. Reuse 2 complete same-day control replicates
+for recall screens. The `--kind fp` rule is unchanged: `D + z·SE < 0` on `d = 2·Δtp − Δfp`.
+
+```bash
+uv run screen /path/to/MalSkillBench/Dataset --db results/recall.duckdb \
+  --units-file results/evalsets/p4-dev.txt --ref-run <baseline run> --label p4-B \
+  --control-runs <c1>,<c2> --treatment-env SKILLSPECTOR_EXA_NECESSITY=on
+```
+
+Options:
+- `--db`, `--units-file`, `--ref-run` (its `evaluation` rows give the strata), `--label` (names the screen dir and the
+  scans' descriptions): required.
+- `--kind recall|fp` (default `recall`): `fp` uses the FP-reducing score, mirroring `arms --kind`.
+- `--treatment-env K=V`, `--control-env K=V`: env for the scans (repeatable).
+- `--control-runs`: reuse these same-day control runs (replicates by comma, unions by `+`) instead of scanning control
+  per batch. Each replicate, as the union of its members, must cover every unit of the units file, and its members
+  must not overlap; otherwise the screen refuses (in normal mode and with `--simulate`).
+- `--batch-size` (150), `--seed` (29), `--z` (2.8), `--min-batches` (3): the pre-registered constants; do not tune.
+- `--stall-seconds` (1200): a scan whose log has not grown for this long is killed (whole process group) and resumed
+  with `--run-id`, at most twice; then the screen stops with an error naming the run.
+- `--auth-wait-seconds` (0): passed through to the scans. At 0 an SSO expiry aborts the scan (and so the screen)
+  instead of waiting for a re-login.
+- Reused control runs that also hold units outside the units file are warned about: the screen proceeds, but `arms`
+  will refuse the printed line because the control and treatment unit sets differ.
+- `--out-dir` (default `results/screens`): the screen writes to `<out-dir>/<label-slug>/`.
+
+Outputs:
+- A header line with the units, batches and constants; for `--kind recall` also `N_TP`, `N_FP` and their source
+  (`range over k reused control replicates`), or in floors mode `N_TP` with `floors: 1 control replicate` or
+  `floors: per-batch control` and `FP clause off: N_FP unknown`.
+- After each batch, a table of the look. Recall kind: units scanned, units judged, errors excluded, dTP, dFP,
+  `F_dtp ± SD_dtp`, `F_dtp + z·SD_dtp` against `2·N_TP`, `F_g + z·SD_g` against 0, `F_dfp − z·SD_dfp` against
+  `N_FP` (in floors mode the two FP columns say `FP clause off`), and the stop (`FUTILE (TP)`, `FUTILE (FP)`,
+  `FUTILE (TP+FP)` or `no`). SDs and bounds are `n/a` below 2 judged units. FP kind: units scanned, judged, errors,
+  dTP, dFP, `D`, `SE`, `D + z·SE`, the boundary, and FUTILE or no.
+- Files in the screen dir: `manifest.json` (batches, run ids, `n_tp`/`n_fp` (`n_fp` null in floors mode) and their
+  source, every look's fields, warnings, result), `batch-NN.txt` (each batch's units file), and the per-scan logs
+  `bNN-<arm>.log` (a resumed scan after a stall logs to `bNN-<arm>.retryN.log`). A screen refuses to reuse a dir that
+  already has `manifest.json`; pick another `--label` or `--out-dir`. There is no automatic resume.
+- The last line is `SCREEN: FUTILE at batch k (m units)`, where m is the units scanned so far. On PASSED the last
+  two lines are `SCREEN: PASSED (n units)` and an `arms:` line with the `--control` and `--treatment` run ids to pass
+  to `arms`. The union of the batch runs is treatment replicate 1.
+- Replicates after a PASSED screen:
+  - When control runs are reused, they are the control replicates (×2); only the treatment gets one more full
+    same-day run (screen union + T2).
+  - When control was scanned per batch, its union is control replicate 1; make one more full control run and one more
+    full treatment run the same day.
+  Then `arms` judges.
+- Warnings (not refusals) when the control's date or git sha differs from the treatment's.
+
+`--simulate` judges existing full runs without scanning: pass the treatment runs with `--treatment-runs` and the
+control with `--control-runs`. It writes no files and runs no scans, so it is a safe way to check what the screen would
+have done on past runs.
+
+Notes:
+- The DB must have no other writer during a screen. The scans hold the DuckDB write lock, and a concurrent writer makes
+  a batch scan fail or the screen's read-only open raise.
+- `arms` checks a union replicate's health pooled over its member runs, as the one full run it stands in for: scans,
+  dropped calls and ERRORs summed, semantic issues counted over all members, the median run_time over the union, and
+  the LLM checks applied if any member used the LLM. Two ERROR units in one 150-unit batch fail only if the union as a
+  whole exceeds 1%. ERROR units can be re-scanned with `uv run benchmark … --units-file <batch file> --run-id <batch
+  run>`. Dropped-call scans cannot be repaired that way.
+
+If a screen dies (SSO expiry, a third stall, a DB lock conflict, a closed terminal), there is no automatic resume. The
+manifest holds each batch's run ids (the failing scan's id is recorded with `"incomplete": "<arm>"` when its log named
+one). Finish a batch scan with `uv run benchmark … --units-file <screen dir>/batch-NN.txt --run-id <id>` (same env as the
+screen's `--treatment-env`/`--control-env`), then either judge what exists with `--simulate`, or start a new screen
+under a new `--label`.
 
 ## Comparing two runs (PR-ready report)
 

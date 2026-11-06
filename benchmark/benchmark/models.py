@@ -54,6 +54,8 @@ class ScanResult:
     num_issues: int = 0
     llm_requested: bool = False
     llm_available: bool = False
+    llm_calls_attempted: int | None = None
+    llm_calls_succeeded: int | None = None
     error_message: str | None = None
     issues: list[dict] = field(default_factory=list)
     components: list[dict] = field(default_factory=list)

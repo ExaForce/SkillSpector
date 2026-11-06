@@ -28,6 +28,18 @@ Each fails with an `AssertionError` (or `KeyError`) about a pruned key
 - `tests/nodes/test_llm_analyzer_base.py::TestMetaAnalyzerResult::test_intent_validation`
 - `tests/nodes/test_semantic_quality_policy.py::TestFixtureMaliciousSkill::test_malicious_skill_findings_preserve_metadata`
 
+## Analyzer registry (`exaforce/_analyzer_registry.py`)
+
+`register_analyzer` appends fork analyzers (`exaforce_lure_rules`) to
+`nodes.analyzers.ANALYZER_NODE_IDS` on every import; each is flag-gated inside
+its wrapper, so registration is unconditional. Upstream's exact-list assertion
+therefore fails in every mode with an `AssertionError`
+("Left contains one more item: 'exaforce_lure_rules'"):
+
+- `tests/nodes/analyzers/test_registry.py::TestAnalyzerRegistry::test_analyzer_node_ids_match_expected`
+
+The other two registry tests (every ID has a node, no extra nodes) still pass.
+
 ## Severity floor (`exaforce/_filter_patches.py`) — none in the default mode
 
 `_filter_patches` lifts the CRITICAL/HIGH floor only for a finding that both
@@ -51,6 +63,28 @@ is green and strictly checked in all three modes.
 Fork-side coverage of the three modes, the empty-verdict case, and the
 `category` invariant that makes this work lives in
 `tests/exaforce/test_patches.py`.
+
+## Block threshold (`exaforce/_score_patches.py`) — opt-in 49 only
+
+`_score_patches` blocks at upstream's cut (51) by default, so these tests pass unmarked in
+a default run. Under the opt-in `SKILLSPECTOR_EXA_BLOCK_THRESHOLD=49` (P6's value; it was the
+default from `4e6863d1` until the 2026-11-06 PR review), a score in [49, 51) bands `HIGH`
+with `DO_NOT_INSTALL`. Two upstream tests
+assert a score of 50 is `MEDIUM` / `CAUTION` and fail with
+`AssertionError: assert 'HIGH' == 'MEDIUM'`. The score is also clamped to keep
+score-keyed consumers (CLI exit code, MCP `safe_to_install`, cut at 50) consistent with
+the recommendation: a block returns `max(score, 51)`, a non-block `min(score, 50)`. So a
+score of 50 becomes 51 and three more tests fail with `assert 51 == 50`:
+
+- `tests/nodes/test_report.py::TestReportNode::test_report_critical_finding_medium_band`
+- `tests/nodes/test_report.py::test_report_doc_findings_no_multiplier`
+- `tests/nodes/test_report.py::TestComputeRiskScoreBasic::test_single_finding_full_confidence_scores_base_points[CRITICAL-50]`
+- `tests/nodes/test_report.py::test_report_baseline_keeps_unmatched_finding`
+- `tests/nodes/test_report.py::test_report_no_baseline_unchanged`
+
+`conftest.py` marks them only while the effective `block_threshold()` is <= 50.
+The entries are calibrated for 49 and for the default 51 (upstream behaviour, where
+they pass unmarked); other values are not guaranteed green.
 
 ## Captured
 

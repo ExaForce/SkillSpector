@@ -7,7 +7,10 @@ that labels every scan TP/FP/TN/FN/ERROR.
 
 from __future__ import annotations
 
+import json
 import pathlib
+import subprocess
+from collections.abc import Mapping
 
 from .config import MALICIOUS_RECOMMENDATION
 from .models import ScanResult
@@ -24,7 +27,8 @@ CREATE TABLE runs (
     use_llm BOOLEAN,
     workers INTEGER,
     sample_limit INTEGER,
-    description TEXT
+    description TEXT,
+    config_json TEXT
 );
 CREATE TABLE units (
     run_id TEXT,
@@ -52,7 +56,9 @@ CREATE TABLE classifications (
     run_time DOUBLE,
     status TEXT,
     error TEXT,
-    num_issues INTEGER
+    num_issues INTEGER,
+    llm_calls_attempted INTEGER,
+    llm_calls_succeeded INTEGER  -- < attempted: some LLM batches were dropped (e.g. 429s)
 );
 CREATE TABLE issues (
     run_id TEXT,
@@ -67,7 +73,8 @@ CREATE TABLE issues (
     start_line INTEGER,
     end_line INTEGER,
     intent TEXT,
-    explanation TEXT
+    explanation TEXT,
+    tags VARCHAR[]  -- e.g. 'llm-unconfirmed': kept by the severity floor, not meta-confirmed
 );
 CREATE TABLE components (
     run_id TEXT,
@@ -107,6 +114,50 @@ SELECT
 FROM units u
 JOIN classifications c USING (run_id, unit_path);
 """
+
+
+# Columns added after the first schema; ALTERed onto older DBs when they are opened.
+_MIGRATIONS = (
+    "ALTER TABLE classifications ADD COLUMN IF NOT EXISTS llm_calls_attempted INTEGER",
+    "ALTER TABLE classifications ADD COLUMN IF NOT EXISTS llm_calls_succeeded INTEGER",
+    "ALTER TABLE issues ADD COLUMN IF NOT EXISTS tags VARCHAR[]",
+    "ALTER TABLE runs ADD COLUMN IF NOT EXISTS config_json TEXT",
+)
+
+_SECRET_MARKERS = ("KEY", "TOKEN", "SECRET", "PASSWORD")
+
+
+def config_snapshot(environ: Mapping[str, str], git_sha: str) -> str:
+    """JSON of the run's git sha plus its SKILLSPECTOR_* / MODEL_OVERRIDE env, minus secrets."""
+    env = {
+        k: v
+        for k, v in sorted(environ.items())
+        if (k.startswith("SKILLSPECTOR_") or k == "MODEL_OVERRIDE")
+        and not any(m in k for m in _SECRET_MARKERS)
+    }
+    return json.dumps({"git_sha": git_sha, "env": env})
+
+
+def current_git_sha() -> str:
+    """Short HEAD sha of the repo holding this module, ``-dirty`` if ``src`` has changes.
+
+    Resolved from this file's path, not the cwd. Returns "unknown" if git fails.
+    """
+    repo_root = pathlib.Path(__file__).resolve().parents[2]
+    try:
+        sha = subprocess.run(
+            ["git", "-C", str(repo_root), "rev-parse", "--short", "HEAD"],
+            capture_output=True, text=True, check=True, timeout=30,
+        ).stdout.strip()  # fmt: skip
+        dirty = subprocess.run(
+            ["git", "-C", str(repo_root), "status", "--porcelain", "--", "src"],
+            capture_output=True, text=True, check=True, timeout=30,
+        ).stdout.strip()  # fmt: skip
+    except (OSError, subprocess.SubprocessError):
+        return "unknown"
+    if not sha:
+        return "unknown"
+    return f"{sha}-dirty" if dirty else sha
 
 
 # Every table keyed by run_id -- deleting a run means clearing its rows in all of
@@ -174,6 +225,8 @@ def open_db(path: pathlib.Path, run_id: str | None):
         con.execute(_SCHEMA)
         con.execute(_EVAL_VIEW)
         return con, set(), False
+    for stmt in _MIGRATIONS:
+        con.execute(stmt)
     if run_id is None:
         return con, set(), False  # append a new run into the existing DB
     if not con.execute("SELECT 1 FROM runs WHERE run_id = ? LIMIT 1", [run_id]).fetchone():
@@ -247,7 +300,50 @@ def delete_runs(con, run_ids: list[str]) -> None:
         raise
 
 
+def _line_or_none(value: object) -> int | None:
+    """Coerce a reported line number to an INT32-safe int, else None (stored as NULL)."""
+    if isinstance(value, bool):
+        return None
+    try:
+        if isinstance(value, int):
+            n = value
+        elif isinstance(value, float):
+            if not value.is_integer():
+                return None
+            n = int(value)
+        elif isinstance(value, str):
+            n = int(value.strip())
+        else:
+            return None
+    except (ValueError, OverflowError):
+        return None
+    return n if 0 <= n <= 2**31 - 1 else None
+
+
+def _text(value: object, limit: int = 4000) -> str:
+    """Coerce a reported free-text field to a str of at most ``limit`` chars.
+
+    Some models return a JSON object or list where the schema says string; store it as JSON instead of crashing.
+    """
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        value = json.dumps(value, default=str, ensure_ascii=False)
+    return value[:limit]
+
+
 def record_result(con, run_id: str, res: ScanResult, no_llm: bool) -> None:
+    """Record one scan result atomically: all rows land, or none do (error re-raised)."""
+    con.execute("BEGIN TRANSACTION")
+    try:
+        _record_result_rows(con, run_id, res, no_llm)
+    except BaseException:
+        con.execute("ROLLBACK")
+        raise
+    con.execute("COMMIT")
+
+
+def _record_result_rows(con, run_id: str, res: ScanResult, no_llm: bool) -> None:
     u = res.unit
     con.execute(
         "INSERT INTO units VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
@@ -271,7 +367,9 @@ def record_result(con, run_id: str, res: ScanResult, no_llm: bool) -> None:
     ok = res.scan_status == "ok"
     predicted = (res.risk_recommendation == MALICIOUS_RECOMMENDATION) if ok else None
     con.execute(
-        "INSERT INTO classifications VALUES (?,?,?,?,?,?,?,?,?,?)",
+        "INSERT INTO classifications (run_id, unit_path, classification, is_malicious, "
+        "risk_score, risk_severity, run_time, status, error, num_issues, "
+        "llm_calls_attempted, llm_calls_succeeded) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
         [
             run_id,
             u.unit_path,
@@ -283,12 +381,16 @@ def record_result(con, run_id: str, res: ScanResult, no_llm: bool) -> None:
             classification_status(res, no_llm),
             res.error_message,
             res.num_issues,
+            res.llm_calls_attempted,
+            res.llm_calls_succeeded,
         ],
     )
     for idx, issue in enumerate(res.issues):
         loc = issue.get("location", {}) or {}
         con.execute(
-            "INSERT INTO issues VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO issues (run_id, unit_path, issue_index, rule_id, category, pattern, "
+            "severity, confidence, file, start_line, end_line, intent, explanation, tags) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             [
                 run_id,
                 u.unit_path,
@@ -299,10 +401,11 @@ def record_result(con, run_id: str, res: ScanResult, no_llm: bool) -> None:
                 issue.get("severity"),
                 issue.get("confidence"),
                 loc.get("file"),
-                loc.get("start_line"),
-                loc.get("end_line"),
+                _line_or_none(loc.get("start_line")),
+                _line_or_none(loc.get("end_line")),
                 issue.get("intent"),
-                (issue.get("explanation") or "")[:4000],
+                _text(issue.get("explanation")),
+                list(issue.get("tags") or []),
             ],
         )
     for comp in res.components:
@@ -337,3 +440,14 @@ def print_summary(con, run_id: str) -> None:
     total = tp + fp + tn + fn
     if total:
         print(f"  accuracy  = {(tp + tn) / total:.3f}  (over {total} scored units)")
+    partial = con.execute(
+        "SELECT count(*) FROM classifications WHERE run_id = ? "
+        "AND llm_calls_succeeded < llm_calls_attempted",
+        [run_id],
+    ).fetchone()[0]
+    if partial:
+        print(
+            f"  {partial} scan(s) lost some LLM calls (llm_calls_succeeded < "
+            "llm_calls_attempted); a jump here vs. the base run suggests throttling -- "
+            "lower --workers"
+        )
