@@ -176,7 +176,7 @@ the rule effect alone (+41 TP / 0 FP on the control's totals); the whole-set pai
 - **Built:** the tools in Section 3, the core dev set (`core-dev.txt`, 1,364 units: 412 annotated malicious, 352
   original FPs, 600 stratified TNs) and `splits.tsv`, plus `baseline-v2`.
 - **Numbers:** `baseline-v2` recall 0.712, precision 0.931, healthy (4.2% dropped, 0 errors). The original run failed
-  `health` (6.9% dropped). 7.9% of SSD HIGH/CRITICAL findings (198 of 2,509) are `llm-unconfirmed` (kept by the
+  `health` at the 5% dropped-call threshold then in force (6.9% dropped); it passes today's 10%. 7.9% of SSD HIGH/CRITICAL findings (198 of 2,509) are `llm-unconfirmed` (kept by the
   severity floor, not confirmed by the meta-analyzer). The `baseline-v2` run crashed at unit 10,638 on an out-of-range
   line number; `1db355d1`/`e2023f4e` fixed it and the run resumed.
 - **Takeaway:** 7.4% per-unit churn with identical code is why every later claim is same-day and replicated.
@@ -357,8 +357,8 @@ last column is P6's paired replay of the same run at the opt-in T = 49 (`60503e6
 † **Holdout selection bias.** The dev sets were drawn from the original run's outcomes. Every unit it got wrong on
 the benign side went into a dev set, so its holdout precision is 1.000 by construction; 1,355 of its 1,865 FNs (73%)
 are in dev although dev holds 37.5% of malicious units, so its holdout recall is inflated. Holdout deltas against the
-original are meaningless; use the `baseline-v2` column. The original run also fails today's `health`, so `baseline-v2`
-is the cleaner comparator in general.
+original are meaningless; use the `baseline-v2` column. The original run passes today's `health` (6.9% dropped,
+under 10%) but failed the 5% threshold in force at P0; `baseline-v2` (4.2%) is the cleaner comparator in general.
 
 ### Per-behaviour recall
 
@@ -503,7 +503,7 @@ the committed file is P5's (4,241 dev / 8,477 holdout).
 
 | run | what |
 |---|---|
-| `113b02ab497b` | original baseline (unhealthy, 6.9% dropped) |
+| `113b02ab497b` | original baseline (6.9% dropped: failed P0's 5% health threshold, passes today's 10%) |
 | `e16e394f65c3` | `baseline-v2`, P0; replay source for P1 and P5's `rulelab` |
 | `0e0f9e105cf8` / `93c1faec5bec` | P5 full control / lure rules on |
 | `bfa51d835e8b` | P6 full run on P5 defaults (threshold 51); head of every cumulative number; replay source for the threshold sweep |
