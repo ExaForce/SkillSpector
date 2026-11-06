@@ -22,7 +22,7 @@ _DOC_META = [
 
 @pytest.fixture(autouse=True)
 def _clean_flags(monkeypatch):
-    # Pin the upstream cut; the default (unset -> 49) has its own tests below.
+    # Pin the upstream cut explicitly; the default (unset -> 51) has its own tests below.
     monkeypatch.setenv("SKILLSPECTOR_EXA_BLOCK_THRESHOLD", "51")
 
 
@@ -132,22 +132,21 @@ def test_threshold_range_edges_accepted(monkeypatch, value):
 def test_threshold_non_integer_ignored(monkeypatch, caplog, value):
     monkeypatch.setenv(_THRESHOLD_ENV, value)
     with caplog.at_level("WARNING"):
-        assert _score_patches.block_threshold() == 49
+        assert _score_patches.block_threshold() == 51
     assert _THRESHOLD_ENV in caplog.text
-    assert _score(_score_near(49)) == (51, "HIGH", "DO_NOT_INSTALL")
-    assert _score(_score_near(48)) == _upstream(_score_near(48))
+    assert _score(_score_near(49)) == _upstream(_score_near(49))
 
 
 def test_threshold_blank_is_default(monkeypatch):
     monkeypatch.setenv(_THRESHOLD_ENV, "  ")
-    assert _score_patches.block_threshold() == 49
+    assert _score_patches.block_threshold() == 51
 
 
-def test_threshold_unset_defaults_to_49(monkeypatch):
+def test_threshold_unset_defaults_to_upstream_51(monkeypatch):
     monkeypatch.delenv(_THRESHOLD_ENV)
-    assert _score_patches.block_threshold() == 49
-    assert _score(_score_near(49)) == (51, "HIGH", "DO_NOT_INSTALL")
-    assert _score(_score_near(48)) == _upstream(_score_near(48))
+    assert _score_patches.block_threshold() == 51
+    assert _score(_score_near(49)) == _upstream(_score_near(49))
+    assert _score(_score_near(49))[2] == "CAUTION"
 
 
 def _random_findings(rng):

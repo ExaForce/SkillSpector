@@ -4,9 +4,12 @@
 Wraps ``skillspector.nodes.report._compute_risk_score``. The flag is read on each call, so it
 can be flipped at runtime.
 
-``SKILLSPECTOR_EXA_BLOCK_THRESHOLD`` — unset (default) means 49; ``51`` restores the upstream
-    cut. An integer T in 21-80 blocks (``DO_NOT_INSTALL``) when score >= T. The returned score
-    is clamped so every score-keyed upstream consumer (CLI exit code, MCP ``safe_to_install``,
+``SKILLSPECTOR_EXA_BLOCK_THRESHOLD`` — unset (default) means 51, upstream's cut, and the patch
+    passes upstream's result through unchanged. ``49`` is the value P6 chose (opt-in; it was the
+    default from ``4e6863d1`` until the 2026-11-06 PR review, which judged its marginal trade of
+    about 2.2 malicious catches per benign block too costly at real-world malware prevalence;
+    see ``benchmark/results/recall-improvement-program.md``). An integer T in 21-80 blocks
+    (``DO_NOT_INSTALL``) when score >= T. Away from 51 the returned score is clamped so every score-keyed upstream consumer (CLI exit code, MCP ``safe_to_install``,
     which cut at ``RISK_THRESHOLD`` = 50) agrees with the recommendation: a block returns
     ``max(score, 51)``, a non-block ``min(score, 50)``; band and recommendation then follow
     upstream's tables from the clamped score. A non-integer value is ignored with a warning; an
@@ -34,7 +37,7 @@ THRESHOLD_ENV = "SKILLSPECTOR_EXA_BLOCK_THRESHOLD"
 
 BLOCK_RECOMMENDATION = "DO_NOT_INSTALL"
 HIGH_FLOOR = 51  # floor of upstream's HIGH band; upstream blocks at score >= 51
-DEFAULT_THRESHOLD = 49  # P6 accepted; 51 is upstream's cut (HIGH_FLOOR)
+DEFAULT_THRESHOLD = HIGH_FLOOR  # upstream's cut; P6's 49 is opt-in
 MIN_THRESHOLD = 21  # floor of upstream's MEDIUM band
 MAX_THRESHOLD = 80  # top of upstream's HIGH band
 
@@ -42,7 +45,7 @@ _EXPECTED_PARAMS = ("findings", "has_executable_scripts", "component_metadata")
 
 
 def block_threshold() -> int:
-    """The block threshold T: unset or non-integer gives the default 49; an integer outside 21-80 raises."""
+    """The block threshold T: unset or non-integer gives the default 51; an integer outside 21-80 raises."""
     raw = os.environ.get(THRESHOLD_ENV, "").strip()
     if not raw:
         return DEFAULT_THRESHOLD

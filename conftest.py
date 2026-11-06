@@ -30,11 +30,13 @@ green and strictly checked in that mode too. Fork-side coverage lives in
 on every import, so upstream's exact-list registry assertion is inverted in all
 modes.
 
-``exaforce/_score_patches`` defaults the block threshold to 49, so a score of 50
-bands HIGH / ``DO_NOT_INSTALL`` where upstream's ``test_report`` tests expect
-MEDIUM / ``CAUTION``, and the score is clamped to 51 (a block) where they expect 50. Marked conditionally below, only while the effective
-threshold (``block_threshold()``) is <= 50. The entries are calibrated for the default
-(49) and for 51 (upstream, unmarked, passes); other values are not guaranteed green.
+``exaforce/_score_patches`` defaults the block threshold to 51 (upstream's cut), so
+it needs no entry by default. Under the opt-in ``SKILLSPECTOR_EXA_BLOCK_THRESHOLD=49``
+a score of 50 bands HIGH / ``DO_NOT_INSTALL`` where upstream's ``test_report`` tests
+expect MEDIUM / ``CAUTION``, and the score is clamped to 51 (a block) where they expect
+50. Marked conditionally below, only while the effective threshold
+(``block_threshold()``) is <= 50. The entries are calibrated for 49 and for the
+default 51 (unmarked, passes); other values are not guaranteed green.
 
 Keep this list in sync with ``docs/superpowers/EXPECTED_TEST_FAILURES.md``.
 """
@@ -78,7 +80,7 @@ _NO_FLOOR_ONLY = (
 )
 
 _BLOCK_THRESHOLD_REASON = (
-    "exaforce _score_patches blocks at a threshold of 49 by default, so a score of 50 "
+    "SKILLSPECTOR_EXA_BLOCK_THRESHOLD=49 (opt-in) blocks at 49, so a score of 50 "
     "bands HIGH/DO_NOT_INSTALL (score lifted to 51); upstream asserts 50, MEDIUM/CAUTION"
 )
 

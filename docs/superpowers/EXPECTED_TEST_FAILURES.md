@@ -64,10 +64,12 @@ Fork-side coverage of the three modes, the empty-verdict case, and the
 `category` invariant that makes this work lives in
 `tests/exaforce/test_patches.py`.
 
-## Block threshold (`exaforce/_score_patches.py`) — default 49
+## Block threshold (`exaforce/_score_patches.py`) — opt-in 49 only
 
-`_score_patches` blocks at a score of 49 by default (`SKILLSPECTOR_EXA_BLOCK_THRESHOLD`,
-P6), so a score in [49, 51) bands `HIGH` with `DO_NOT_INSTALL`. Two upstream tests
+`_score_patches` blocks at upstream's cut (51) by default, so these tests pass unmarked in
+a default run. Under the opt-in `SKILLSPECTOR_EXA_BLOCK_THRESHOLD=49` (P6's value; it was the
+default from `4e6863d1` until the 2026-11-06 PR review), a score in [49, 51) bands `HIGH`
+with `DO_NOT_INSTALL`. Two upstream tests
 assert a score of 50 is `MEDIUM` / `CAUTION` and fail with
 `AssertionError: assert 'HIGH' == 'MEDIUM'`. The score is also clamped to keep
 score-keyed consumers (CLI exit code, MCP `safe_to_install`, cut at 50) consistent with
@@ -81,7 +83,7 @@ score of 50 becomes 51 and three more tests fail with `assert 51 == 50`:
 - `tests/nodes/test_report.py::test_report_no_baseline_unchanged`
 
 `conftest.py` marks them only while the effective `block_threshold()` is <= 50.
-The entries are calibrated for the default (49) and for 51 (upstream behaviour, where
+The entries are calibrated for 49 and for the default 51 (upstream behaviour, where
 they pass unmarked); other values are not guaranteed green.
 
 ## Captured

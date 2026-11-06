@@ -9,16 +9,21 @@ two records disagree, the text says which one was used.</sub>
 
 - **Goal** (`docs/superpowers/specs/2026-10-29-recall-improvement-program.md`): raise malicious-skill recall above the
   0.709 of run `113b02ab497b` while keeping precision at about 0.92 or better.
-- **Outcome: met, by a small margin.** The shipped defaults reach recall **0.734** at precision **0.926** on all
-  12,718 units (head run `60503e65c287`). Against the original: +0.025 recall, −0.002 precision.
-- **Only about +0.015 of that is causal**, measured same-day: P5 lure rules +0.0064 (+0.0059 after drift
-  correction) and P6 threshold 49 +0.0087. The rest is endpoint drift and run-to-run churn, which is large: with
-  identical classifier code, 7.4% of units changed outcome between two runs 5 days apart (P0).
-- **Shipped, on by default:**
-  - P5: static lure rules `EXA-LU1` (pipe-to-shell from an IP literal or paste service) and `EXA-LU4` (base64
-    decode piped into an interpreter or `eval`). Flag `SKILLSPECTOR_EXA_LURE_RULES`, `=off` disables (`45fb9511`).
-  - P6: block threshold 49 instead of 51, with a score clamp so CLI and MCP agree. Flag
-    `SKILLSPECTOR_EXA_BLOCK_THRESHOLD`, `=51` restores upstream (`4e6863d1`, `33271de5`).
+- **Outcome: met on paper, by a small margin, and mostly through drift.** The shipped defaults reach recall
+  **0.725** at precision **0.930** on all 12,718 units (head run `bfa51d835e8b`, a real full scan). Against the
+  original: +0.016 recall, +0.002 precision.
+- **Only about +0.006 of that is causal**, measured same-day: P5 lure rules +0.0064 (+0.0059 after drift
+  correction). The rest is endpoint drift and run-to-run churn, which is large: with identical classifier code, 7.4%
+  of units changed outcome between two runs 5 days apart (P0). P6's threshold 49 adds a causal +0.0087 recall at
+  −0.0040 precision, but it is opt-in (see below); with it, the head would be recall 0.734 at precision 0.926.
+- **Shipped, on by default:** P5's static lure rules `EXA-LU1` (pipe-to-shell from an IP literal or paste service)
+  and `EXA-LU4` (base64 decode piped into an interpreter or `eval`). Flag `SKILLSPECTOR_EXA_LURE_RULES`, `=off`
+  disables (`45fb9511`). They match the delivery style of ClawHavoc, the one real campaign in the corpus.
+- **Shipped, opt-in:** P6's block threshold 49, with a score clamp so CLI and MCP agree
+  (`SKILLSPECTOR_EXA_BLOCK_THRESHOLD=49`; `4e6863d1`, `33271de5`). P6 was accepted and was the default from
+  `4e6863d1`; the PR review on 2026-11-06 put the default back to upstream's 51. Its marginal trade is about 2.2
+  malicious catches per benign block on a corpus that is half malicious, which at realistic malware prevalence means
+  several benign blocks per catch (Section 4, P6).
 - **Not shipped (code rolled back, records kept):**
   - P1 semantic gate, P3 skill context / instruction flow, P4 necessity audit: each found real misses (ΔTP +31.5,
     up to +113, up to +79 on their dev sets) and was **rejected on FP cost and run health**, not for too little
@@ -158,7 +163,7 @@ a stalled run with `--run-id <id>`, which rescans only missing units. Every run 
 | P3 | skill-context header; per-skill instruction flow | REJECTED (FP cost, health) | +0.097 best arm B3 (dev 2,112) | +0.030 | rolled back `1b950d70` |
 | P4 | necessity audit (SSD-5; EXA-NE1) | REJECTED (FP cost, health) | +0.070 best arm B (dev 2,393) | −0.010 | rolled back `b9354821` |
 | P5 | lure rules EXA-LU1, EXA-LU4 | **ACCEPTED** | **+0.0064** (full set, rule-affected units: +41 TP / 0 FP) | +0.0006 | **on by default** |
-| P6 | block threshold 51 → 49, score clamp | **ACCEPTED** | **+0.0087** (full set, paired replay: +56 TP / +26 FP) | −0.0040 | **on by default** |
+| P6 | block threshold 51 → 49, score clamp | **ACCEPTED**; opt-in after PR review | **+0.0087** (full set, paired replay: +56 TP / +26 FP) | −0.0040 | shipped, **opt-in** (`=49`); default 51 |
 | P7 | stronger model for the SSD slot | REJECTED (too little gain) | +0.032 best, deepseek (dev 1,364) | +0.029 | no classifier code; records rolled back `cb417b57` |
 
 Dev-set deltas are on each plan's own dev set and do not compare across plans. The dev sets are FP-heavy by
@@ -170,7 +175,7 @@ the rule effect alone (+41 TP / 0 FP on the control's totals); the whole-set pai
 - **Hypothesis:** later plans need tooling that separates an effect from noise, drift and endpoint failure.
 - **Built:** the tools in Section 3, the core dev set (`core-dev.txt`, 1,364 units: 412 annotated malicious, 352
   original FPs, 600 stratified TNs) and `splits.tsv`, plus `baseline-v2`.
-- **Numbers:** `baseline-v2` recall 0.712, precision 0.931, healthy (4.2% dropped, 0 errors). The original run fails
+- **Numbers:** `baseline-v2` recall 0.712, precision 0.931, healthy (4.2% dropped, 0 errors). The original run failed
   `health` (6.9% dropped). 7.9% of SSD HIGH/CRITICAL findings (198 of 2,509) are `llm-unconfirmed` (kept by the
   severity floor, not confirmed by the meta-analyzer). The `baseline-v2` run crashed at unit 10,638 on an out-of-range
   line number; `1db355d1`/`e2023f4e` fixed it and the run resumed.
@@ -291,10 +296,22 @@ the rule effect alone (+41 TP / 0 FP on the control's totals); the whole-set pai
 - **Clamp** (`33271de5`, final review C1): a blocked score is lifted to at least 51 and an unblocked one capped at 50,
   so the CLI exit code and MCP `safe_to_install` (both keyed on `score > 50`) agree with the recommendation. The
   benchmark reads only the recommendation, so it could not have caught this.
-- **Code status:** shipped, 49 by default from `4e6863d1`; `=51` restores upstream; range 21–80. Five upstream
-  `tests/nodes/test_report.py` tests are strict xfail while the threshold is ≤ 50 (14 xfailed in the root suite, unchanged after the P1/P2 rollbacks).
+- **PR review (2026-11-06): default back to 51, 49 opt-in.** The acceptance rule judged the trade on this corpus,
+  which is about half malicious (6,403 of 12,718). The units it moves are 0.87% of malicious and 0.41% of benign units.
+  At malware prevalence p, that is 0.47·(1 − p)/p benign blocks per extra catch: about 0.5 at p = 50%, 4 at 10%, 9 at
+  5%, 47 at 1%. The scanner already flags 5.5% of benign units at T = 51 (17% of those with 6–20 files), so
+  in real use its precision is dominated by FPs, and the new FPs include mainstream integrations. The gain is also
+  fragile: fitted and judged on one run (replication +0.69 rather than +0.87 points), a precision drop 0.001 inside its
+  limit, and scores at the cut that move a median of 26 points on re-scan. Costs that stay with a default of 49: the
+  reported score is rewritten by the clamp, five upstream tests are inverted, and runs at the default store clamped
+  scores that replay cannot use. Making 49 the default again is worth it only where a missed malicious skill costs at
+  least 0.47·(1 − p)/p times a wrong block (about 4× at 10% prevalence).
+- **Code status:** shipped and opt-in. Unset means 51, upstream's cut, and the patch passes upstream's result through
+  unchanged; `=49` is P6's value; range 21–80. Five upstream `tests/nodes/test_report.py` tests are strict xfail only
+  while the threshold is ≤ 50, so the root suite shows 9 xfailed by default and 14 with `=49`.
 - **Takeaway:** paired replay has zero arm-to-arm noise, but the threshold is still fitted on one run's scores; the
-  independent replication's smaller gain (+0.69 vs +0.87 points) is the honest estimate of the optimism.
+  independent replication's smaller gain (+0.69 vs +0.87 points) is the honest estimate of the optimism. A threshold's
+  trade has to be judged at the deployment's malware prevalence, not the benchmark's.
 
 ### P7: a stronger model for the SSD slot (O7)
 
@@ -324,17 +341,18 @@ the rule effect alone (+41 TP / 0 FP on the control's totals); the whole-set pai
 ## 5. Cumulative results
 
 Both comparisons cross days and include drift and churn, so they are not causal. The per-plan same-day rows in
-Section 4 are the causal estimates. Head run: `60503e65c287`, P6's replay of the full run `bfa51d835e8b` at T = 49 with
-the clamp (it carries P5's lure rules, on by default at `c0e4ccaa`). P7 made no full run.
+Section 4 are the causal estimates. Head run: `bfa51d835e8b`, P6's full control run on P5's defaults (`c0e4ccaa`,
+2026-11-05, lure rules on, threshold 51), which is exactly the shipped default behaviour. P7 made no full run. The
+last column is P6's paired replay of the same run at the opt-in T = 49 (`60503e65c287`).
 
-| | original `113b02ab497b` | `baseline-v2` `e16e394f65c3` | current defaults `60503e65c287` | Δ vs original | Δ vs baseline-v2 |
-|---|---|---|---|---|---|
-| recall | 0.709 | 0.712 | **0.734** | +0.025 | +0.022 |
-| precision | 0.928 | 0.931 | **0.926** | −0.002 | −0.005 |
-| TP / FP | 4,538 / 352 | 4,557 / 336 | 4,697 / 373 | +159 / +21 | +140 / +37 |
-| holdout recall | 0.873 † | 0.873 | 0.879 | † | +0.006 |
-| holdout precision | 1.000 † | 0.972 | 0.964 | † | −0.008 |
-| non-STB recall | 0.427 | 0.437 | 0.464 | +0.037 | +0.028 |
+| | original `113b02ab497b` | `baseline-v2` `e16e394f65c3` | current defaults `bfa51d835e8b` | Δ vs original | Δ vs baseline-v2 | opt-in `=49` `60503e65c287` |
+|---|---|---|---|---|---|---|
+| recall | 0.709 | 0.712 | **0.725** | +0.016 | +0.013 | 0.734 |
+| precision | 0.928 | 0.931 | **0.930** | +0.002 | −0.001 | 0.926 |
+| TP / FP | 4,538 / 352 | 4,557 / 336 | 4,641 / 347 | +103 / −5 | +84 / +11 | 4,697 / 373 |
+| holdout recall | 0.873 † | 0.873 | 0.876 | † | +0.002 | 0.879 |
+| holdout precision | 1.000 † | 0.972 | 0.968 | † | −0.005 | 0.964 |
+| non-STB recall | 0.427 | 0.437 | 0.447 | +0.020 | +0.010 | 0.464 |
 
 † **Holdout selection bias.** The dev sets were drawn from the original run's outcomes. Every unit it got wrong on
 the benign side went into a dev set, so its holdout precision is 1.000 by construction; 1,355 of its 1,865 FNs (73%)
@@ -345,26 +363,26 @@ is the cleaner comparator in general.
 ### Per-behaviour recall
 
 The 11 behaviours below 0.80 recall in the original run (`report` "By behavior"; units without a behaviour label are
-left out). Original against current defaults:
+left out). Original against current defaults (`bfa51d835e8b`):
 
 | behaviour | n | original | current | Δ | still < 0.80 | boundary that explains the remaining gap |
 |---|---|---|---|---|---|---|
-| Content Manipulation | 250 | 0.248 | 0.240 | −0.008 | yes | B3 output integrity; only O4 targeted it and P4 was rejected |
-| Credential Theft | 154 | 0.299 | 0.305 | +0.006 | yes | B0: MSB units sanitised or redacted; mostly a label problem |
+| Content Manipulation | 250 | 0.248 | 0.232 | −0.016 | yes | B3 output integrity; only O4 targeted it and P4 was rejected |
+| Credential Theft | 154 | 0.299 | 0.299 | 0.000 | yes | B0: MSB units sanitised or redacted; mostly a label problem |
 | Role Hijack | 13 | 0.308 | 0.385 | +0.077 | yes | B1 scoring; P1's gate recovered these but was rejected |
-| System Prompt Leak | 43 | 0.302 | 0.395 | +0.093 | yes | B1 scoring, as Role Hijack |
-| Safety Bypass | 20 | 0.350 | 0.500 | +0.150 | yes | B1 scoring, as Role Hijack |
-| Remote Code Execution | 81 | 0.370 | 0.407 | +0.037 | yes | B0 + B5: MSB vendor pipe-to-shell templates; P5 covers part |
+| System Prompt Leak | 43 | 0.302 | 0.372 | +0.070 | yes | B1 scoring, as Role Hijack |
+| Safety Bypass | 20 | 0.350 | 0.450 | +0.100 | yes | B1 scoring, as Role Hijack |
+| Remote Code Execution | 81 | 0.370 | 0.358 | −0.012 | yes | B0 + B5: MSB vendor pipe-to-shell templates; P5 covers part |
 | Resource Abuse | 122 | 0.434 | 0.475 | +0.041 | yes | B3: SkillHarm `dos` presented as preflight, plus B0 placeholders |
-| Goal Hijacking | 234 | 0.598 | 0.590 | −0.008 | yes | B2/B3, SkillHarm only (STB is 1.00) |
-| Persistence | 285 | 0.730 | 0.758 | +0.028 | yes | B2: shell-rc edits in PDFs or auxiliary docs; P2 has no verdict |
-| Data Exfiltration | 304 | 0.734 | 0.740 | +0.006 | yes | B0 placeholder hosts plus a SkillHarm detection gap (B2/B3) |
-| Privilege Escalation | 1,071 | 0.789 | 0.811 | +0.022 | **no** | crossed 0.80 |
+| Goal Hijacking | 234 | 0.598 | 0.581 | −0.017 | yes | B2/B3, SkillHarm only (STB is 1.00) |
+| Persistence | 285 | 0.730 | 0.751 | +0.021 | yes | B2: shell-rc edits in PDFs or auxiliary docs; P2 has no verdict |
+| Data Exfiltration | 304 | 0.734 | 0.734 | 0.000 | yes | B0 placeholder hosts plus a SkillHarm detection gap (B2/B3) |
+| Privilege Escalation | 1,071 | 0.789 | 0.802 | +0.013 | **no** | crossed 0.80, barely |
 
 Small slices move a lot by chance (Role Hijack is 13 units, Safety Bypass 20). Against `baseline-v2`, System Prompt
-Leak (0.465 → 0.395) and Role Hijack (0.462 → 0.385) went down, so their gains against the original are within
-run-to-run noise. Only P5's rules (RCE, STB dropper cells) and P6's threshold (every behaviour, a little) are causal
-contributors to this table.
+Leak (0.465 → 0.372) and Role Hijack (0.462 → 0.385) went down, so their gains against the original are within
+run-to-run noise. Only P5's rules (STB dropper cells, part of RCE) are causal contributors to this table, and RCE
+still fell 0.012 against the original: its drift outweighed P5's share.
 
 ## 6. Lessons
 
@@ -389,16 +407,18 @@ contributors to this table.
    NE1. P7: about 10% of FNs carried a HIGH+ SSD finding. Where that share is small, no scoring change will help; the
    analyzer has to see the harm. (P7's first draft blamed the cap; the final review disproved it.)
 6. **Replay is exact for scoring changes, with two traps.** Replay sources must be recorded at
-   `SKILLSPECTOR_EXA_BLOCK_THRESHOLD=51`: at the default the stored score is clamped, so a raw 49 or 50 is stored as 51
-   and later replays near the cut are silently wrong. `bfa51d835e8b` predates the default and is safe. Replay also
+   `SKILLSPECTOR_EXA_BLOCK_THRESHOLD=51` (the default again since the PR review): at 49 the stored score is clamped,
+   so a raw 49 or 50 is stored as 51 and later replays near the cut are silently wrong. Runs made with the variable
+   unset between `4e6863d1` and the PR review are at 49. `bfa51d835e8b` predates `4e6863d1` and is safe. Replay also
    gates the stored pre-dedup issues while the classifier scores deduplicated findings (bounded at ≤ 3 units on
    `baseline-v2`).
 7. **Pre-register, and label what is post-hoc.** The futility screen, the health amendment and P6's selection rule
    were fixed before data. P5's offline bar and acceptance criteria were changed after results were seen; both are
    recorded as user decisions and called post-hoc in the records.
 8. **Flag provenance changes with defaults.** Unset `SKILLSPECTOR_EXA_LURE_RULES` meant off before `45fb9511` and on
-   after; unset `SKILLSPECTOR_EXA_BLOCK_THRESHOLD` meant 51 before `4e6863d1` and 49 after. `arms` and resume pinning
-   compare env values only, so a control that needs the old behaviour must set `=off` or `=51` explicitly.
+   after; unset `SKILLSPECTOR_EXA_BLOCK_THRESHOLD` meant 51 before `4e6863d1`, 49 from `4e6863d1` (P7's runs included),
+   and 51 again from the 2026-11-06 PR review. `arms` and resume pinning compare env values only, so a run that needs a
+   particular behaviour must set the flag explicitly.
 9. **The harness needs its own robustness.** The DuckDB file is locked for a whole run: watch log growth, query a
    copy. Runs can hang at the last unit (P2 control r2, P3 B3 r2; root cause unknown): resume with `--run-id`. One
    unrecordable scan still aborts a whole run (`79176a33` fixed one cause). A model whose calls all fail still records
@@ -407,7 +427,7 @@ contributors to this table.
 
 ### Product
 
-1. **One HIGH LLM finding cannot block.** It adds 25·confidence; blocking needs 51 (49 since P6). Any new LLM
+1. **One HIGH LLM finding cannot block.** It adds 25·confidence; blocking needs 51 (49 under P6's opt-in). Any new LLM
    analyzer that reports one HIGH finding per skill needs a scoring path, not prompt work, to turn findings into
    verdicts.
 2. **Scores pile up just under the cut.** Score 50 alone held 66 units (43 malicious, 23 benign) in P6's source run, and
@@ -434,7 +454,7 @@ contributors to this table.
 | flag | default | effect |
 |---|---|---|
 | `SKILLSPECTOR_EXA_LURE_RULES` | on (unset) | `EXA-LU1`, `EXA-LU4` static analyzer, HIGH, confidence 0.9; `=off` disables |
-| `SKILLSPECTOR_EXA_BLOCK_THRESHOLD` | 49 (unset) | block cut; `=51` restores upstream; 21–80, out of range raises `ValueError`, non-integer warns and uses the default; the reported score is clamped to the band |
+| `SKILLSPECTOR_EXA_BLOCK_THRESHOLD` | 51 (unset), upstream's cut | block cut; `=49` is P6's opt-in value; 21–80, out of range raises `ValueError`, non-integer warns and uses the default; away from 51 the reported score is clamped so CLI, MCP and the recommendation agree |
 
 Removed with their rollbacks: `SKILLSPECTOR_EXA_SEMANTIC_GATE`, `SKILLSPECTOR_EXA_DOC_MEDIUM_CAP`,
 `SKILLSPECTOR_EXA_GATE_RULES` (P1); `SKILLSPECTOR_EXA_DOC_TEXT`, `SKILLSPECTOR_EXA_HIDDEN_TEXT` (P2);
@@ -447,13 +467,14 @@ default.
 From `benchmark/`, against the local `results/recall.duckdb` (not committed; the run ids below are in it):
 
 ```bash
-# cumulative, against the original and against baseline-v2 (drift-confounded)
-uv run report results/recall.duckdb 60503e65c287 --base 113b02ab497b --split-file results/evalsets/splits.tsv
-uv run report results/recall.duckdb 60503e65c287 --base e16e394f65c3 --split-file results/evalsets/splits.tsv
-# P6 causal: paired replay against its own source run; P5 causal: the full same-day pair
-uv run report results/recall.duckdb 60503e65c287 --base bfa51d835e8b --split-file results/evalsets/splits.tsv
+# cumulative, current defaults against the original and against baseline-v2 (drift-confounded)
+uv run report results/recall.duckdb bfa51d835e8b --base 113b02ab497b --split-file results/evalsets/splits.tsv
+uv run report results/recall.duckdb bfa51d835e8b --base e16e394f65c3 --split-file results/evalsets/splits.tsv
+# P5 causal: the full same-day pair (judge on the rule-affected units, see below)
 uv run report results/recall.duckdb 93c1faec5bec --base 0e0f9e105cf8 --split-file results/evalsets/splits.tsv
-# regenerate the P6 head run from its source (writes a new synthetic run id)
+# P6 (opt-in) causal: paired replay at T = 49 against its own source run
+uv run report results/recall.duckdb 60503e65c287 --base bfa51d835e8b --split-file results/evalsets/splits.tsv
+# regenerate that replay from its source (writes a new synthetic run id)
 uv run replay results/recall.duckdb bfa51d835e8b --policy '{"threshold": 49}'
 # health of any run; dev verdicts
 uv run health results/recall.duckdb <run_id>
@@ -466,12 +487,13 @@ the committed file is P5's (4,241 dev / 8,477 holdout).
 
 ### State of this PR
 
-- **Root suite:** 2,041 passed, 14 xfailed (strict, by design), 0 failed. **Benchmark suite:** 214 passed. These are
-  after the P1/P2/P7 rollbacks.
+- **Root suite:** 2,046 passed, 9 xfailed (strict, by design), 0 failed at the defaults; with
+  `SKILLSPECTOR_EXA_BLOCK_THRESHOLD=49`, 2,041 passed and 14 xfailed. **Benchmark suite:** 214 passed. These are after
+  the P1/P2/P7 rollbacks and the threshold default change.
 - **Fork classifier code that ships:**
   - the pre-program patches;
   - `_lure_rules` (P5);
-  - the threshold in `_score_patches` (P6);
+  - the threshold in `_score_patches` (P6), opt-in;
   - `_analyzer_registry` and `_fork_context`, the plumbing the lure rules need;
   - `_patchlib.intercept_module_callable`.
 - **Benchmark harness:** P0's tooling, `rulelab` (P5), `replay`'s threshold support and `decide` (P6), and the
@@ -484,8 +506,8 @@ the committed file is P5's (4,241 dev / 8,477 holdout).
 | `113b02ab497b` | original baseline (unhealthy, 6.9% dropped) |
 | `e16e394f65c3` | `baseline-v2`, P0; replay source for P1 and P5's `rulelab` |
 | `0e0f9e105cf8` / `93c1faec5bec` | P5 full control / lure rules on |
-| `bfa51d835e8b` | P6 full run on P5 defaults; replay source for the threshold sweep |
-| `60503e65c287` | P6 replay at T = 49 with the clamp; head of every cumulative number |
+| `bfa51d835e8b` | P6 full run on P5 defaults (threshold 51); head of every cumulative number; replay source for the threshold sweep |
+| `60503e65c287` | P6 replay at T = 49 with the clamp; what the opt-in threshold gives |
 | `7f54de6438ea`, `6822ec3bf3eb` | P7 dev controls (same day as the P7 candidates) |
 
 ### Where the records live
@@ -513,13 +535,13 @@ Ranked by expected value per unit of effort, with the uncertainty stated. None o
 
 1. **Explain the score-50 mass** (cheap: replay and stored findings only). 66 units sit at exactly 50 and HIGH static
    findings land at 43–47. If the meta-verdict-over-static-severity patch is the cause, fixing it is a scoring change
-   that `replay` can quantify exactly before any live run. Upside unknown; it may overlap P6's gain, since P6 already
-   took the units at 49–50.
+   that `replay` can quantify exactly before any live run. Upside unknown; it may overlap P6's opt-in threshold, which
+   takes the units at 49–50.
 2. **Give P1's gate its full-run acceptance test** (two full runs, about 2 h). Offline it was +0.029 recall at −0.001
    precision on the full set and 11:1 on holdout; the dev REJECT depended on one control pairing. Uncertainty: live dev
    FP was about 3× the offline prediction, the gate targets only units with a HIGH SSD/P2 finding (P7 says that is a
-   minority of misses), and its interaction with threshold 49 is unmeasured. Highest single upside on record, but the
-   code is now rolled back and would need restoring.
+   minority of misses), and its interaction with the opt-in threshold 49 is unmeasured. Highest single upside on
+   record, but the code is now rolled back and would need restoring.
 3. **Finish P2** (replicate 2 and full acceptance). One replicate showed +37 TP with flat or lower FP on its dev set,
    aimed at Persistence and part of Data Exfiltration. Uncertainty: one replicate, 97.5% one generator, PDF precision
    unmeasured.
@@ -535,5 +557,6 @@ Ranked by expected value per unit of effort, with the uncertainty stated. None o
 7. **New detection for B3 and scripts SKILL.md runs.** The misses that remain are mostly ones no analyzer flags. P4
    suggests a necessity view finds them but at an FP cost, and that most of its FNs hide the harm in a script
    SKILL.md tells the agent to run. This is the largest pool of misses and the least certain lever.
-8. **Not recommended:** further model swaps in the SSD slot (no candidate raised HIGH+ findings on missed units), and
-   further threshold moves before item 1 (T = 47 already fails the precision and FP-cap clauses).
+8. **Not recommended:** further model swaps in the SSD slot (no candidate raised HIGH+ findings on missed units);
+   further threshold moves before item 1 (T = 47 already fails the precision and FP-cap clauses); and making 49 the
+   default again without an estimate of real-world malware prevalence and of the cost of a miss against a wrong block.

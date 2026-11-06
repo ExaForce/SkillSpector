@@ -96,7 +96,7 @@ def _classifier_verdict(findings: list[dict]) -> bool:
 def _patched(monkeypatch):
     skillspector.exaforce.apply_patches()
     assert getattr(report._compute_risk_score, "_exaforce_wrapped", False)
-    # Policy() is the upstream scorer (51); the classifier defaults to 49, so pin it.
+    # Policy() is the upstream scorer (51), the classifier's default; pin it so the env can't leak in.
     monkeypatch.setenv("SKILLSPECTOR_EXA_BLOCK_THRESHOLD", "51")
 
 
@@ -137,10 +137,10 @@ def test_threshold_lists_exercise_every_threshold():
         assert flipped > 0, threshold
 
 
-def test_unset_flag_equals_threshold_49(monkeypatch):
-    """The classifier's unset default is T = 49, i.e. ``Policy(threshold=49)`` on the lists."""
+def test_unset_flag_equals_upstream_policy(monkeypatch):
+    """The classifier's unset default is T = 51, i.e. ``Policy()`` (the upstream scorer) on the lists."""
     monkeypatch.delenv("SKILLSPECTOR_EXA_BLOCK_THRESHOLD")
-    policy = Policy(threshold=49)
+    policy = Policy()
     for findings in _LISTS:
         c_score, c_band, c_rec = _classifier_result(findings)
         assert _replay_decision(findings, policy) == (
@@ -150,5 +150,5 @@ def test_unset_flag_equals_threshold_49(monkeypatch):
             c_rec,
         )
     assert any(
-        _replay_verdict(f, policy) != _replay_verdict(f, Policy()) for f in _LISTS
-    )  # not vacuous
+        _replay_verdict(f, policy) != _replay_verdict(f, Policy(threshold=49)) for f in _LISTS
+    )  # not vacuous: the lists separate the default from P6's opt-in 49
