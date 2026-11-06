@@ -537,11 +537,11 @@ Ranked by expected value per unit of effort, with the uncertainty stated. None o
    findings land at 43–47. If the meta-verdict-over-static-severity patch is the cause, fixing it is a scoring change
    that `replay` can quantify exactly before any live run. Upside unknown; it may overlap P6's opt-in threshold, which
    takes the units at 49–50.
-2. **Give P1's gate its full-run acceptance test** (two full runs, about 2 h). Offline it was +0.029 recall at −0.001
-   precision on the full set and 11:1 on holdout; the dev REJECT depended on one control pairing. Uncertainty: live dev
-   FP was about 3× the offline prediction, the gate targets only units with a HIGH SSD/P2 finding (P7 says that is a
-   minority of misses), and its interaction with the opt-in threshold 49 is unmeasured. Highest single upside on
-   record, but the code is now rolled back and would need restoring.
+2. **A scoring path for HIGH LLM findings, designed fresh** (Product lesson 1). P1's gate stays rolled back; this
+   program does not reopen it. Its record still informs a new design: offline +0.029 recall at −0.001 precision and
+   11:1 on holdout, but live dev FP about 3× the offline prediction, a dev REJECT that hung on one control pairing, and
+   a target (units with a HIGH SSD/P2 finding) that P7 shows is a minority of misses. A new design needs its own
+   pre-registration and a full-run acceptance pair, which no LLM-recall change in this program got.
 3. **Finish P2** (replicate 2 and full acceptance). One replicate showed +37 TP with flat or lower FP on its dev set,
    aimed at Persistence and part of Data Exfiltration. Uncertainty: one replicate, 97.5% one generator, PDF precision
    unmeasured.
