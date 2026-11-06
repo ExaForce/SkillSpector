@@ -1,36 +1,24 @@
 # SPDX-License-Identifier: Apache-2.0
 """Parity: offline ``replay`` and the classifier's patched scorer reach the same verdict.
 
-P1 chooses its gate/cap policy offline with ``replay`` and then turns it on in the
-classifier through ``SKILLSPECTOR_EXA_*`` flags (``skillspector/exaforce/_score_patches``).
-That only transfers if both decide every finding list the same way, so random lists are
-scored by both under each policy and the block/no-block verdicts compared.
+P6 chose the block threshold offline with ``replay`` and the classifier applies it through
+``SKILLSPECTOR_EXA_BLOCK_THRESHOLD`` (``skillspector/exaforce/_score_patches``). That only
+transfers if both decide every finding list the same way, so random lists are scored by both
+and the verdict, score, band and recommendation compared. Replay's gate and doc-MEDIUM cap
+options (P1, rejected) have no classifier counterpart any more and are not checked here.
 """
 
 from __future__ import annotations
 
 import random
-from dataclasses import replace
 
 import pytest
 import skillspector.exaforce
-from skillspector.exaforce import _score_patches
 from skillspector.models import Finding
 from skillspector.nodes import report
 
-from benchmark.replay import GATE_MIN_SCORE, UNCONFIRMED_TAG, Policy, _gate_hit, decide, rescore
+from benchmark.replay import Policy, decide, rescore
 
-_FLAGS = (
-    "SKILLSPECTOR_EXA_SEMANTIC_GATE",
-    "SKILLSPECTOR_EXA_GATE_RULES",
-    "SKILLSPECTOR_EXA_GATE_MIN_SEVERITY",
-    "SKILLSPECTOR_EXA_DOC_MEDIUM_CAP",
-    "SKILLSPECTOR_EXA_BLOCK_THRESHOLD",
-)
-# The classifier's default rule list, so a drift in it shows up as a replay mismatch here.
-_GATE_RULES = _score_patches.DEFAULT_GATE_RULES
-
-# SSD-10 / P20 start with a gate entry's text but are different rules (an exact entry is not a prefix).
 _RULES = ("SSD-1", "SSD-10", "SSD-2", "P20", "SSD-3", "SSD-4", "P2", "SDI-1", "SC1", "X")
 _SEVERITIES = ("CRITICAL", "HIGH", "MEDIUM", "LOW", "medium", "high", "INFO")
 _CONFIDENCES = (0.0, 0.1, 0.3, 0.5, 0.7, 0.9, 1.0, 1.4, -0.2)
@@ -47,23 +35,9 @@ _FILES = ("SKILL.md", "README.md", "run.sh", "tool.py", "notes.md")
 _EXECUTABLE = frozenset(c["path"] for c in _METADATA if c["executable"])
 _NON_EXECUTABLE = frozenset(c["path"] for c in _METADATA if not c["executable"])
 
-# (policy, flags): flags left out are unset, so the gate's rule list is the flag default.
-_POLICIES = {
-    "default": (Policy(), {}),
-    "gate-any": (
-        Policy(gate_rules=_GATE_RULES, gate_mode="any"),
-        {"SKILLSPECTOR_EXA_SEMANTIC_GATE": "any"},
-    ),
-    "gate-confirmed": (
-        Policy(gate_rules=_GATE_RULES, gate_mode="confirmed"),
-        {"SKILLSPECTOR_EXA_SEMANTIC_GATE": "confirmed"},
-    ),
-    "cap-3": (Policy(doc_medium_cap=3), {"SKILLSPECTOR_EXA_DOC_MEDIUM_CAP": "3"}),
-}
-
 
 def _random_lists(n: int = 200) -> list[list[dict]]:
-    """Mixed lists; every other one is doc-MEDIUM heavy so the cap can change a verdict."""
+    """Mixed lists; every other one is doc-MEDIUM heavy, so scores spread across the cut."""
     rng = random.Random(1)
     lists = []
     for i in range(n):
@@ -94,10 +68,7 @@ _LISTS = _random_lists()
 def _replay_decision(findings: list[dict], policy: Policy) -> tuple[bool, int, str, str]:
     """``(verdict, score, band, recommendation)`` replay gives; the band/rec come from ``decide``."""
     score = min(100, max(0, int(rescore(findings, _EXECUTABLE, policy, _NON_EXECUTABLE))))
-    gated = _gate_hit(findings, policy)
-    if gated:
-        score = max(score, GATE_MIN_SCORE)
-    return decide(score, gated, policy.threshold)
+    return decide(score, False, policy.threshold)
 
 
 def _replay_verdict(findings: list[dict], policy: Policy) -> bool:
@@ -125,95 +96,26 @@ def _classifier_verdict(findings: list[dict]) -> bool:
 def _patched(monkeypatch):
     skillspector.exaforce.apply_patches()
     assert getattr(report._compute_risk_score, "_exaforce_wrapped", False)
-    for name in _FLAGS:
-        monkeypatch.delenv(name, raising=False)
     # Policy() is the upstream scorer (51); the classifier defaults to 49, so pin it.
     monkeypatch.setenv("SKILLSPECTOR_EXA_BLOCK_THRESHOLD", "51")
 
 
-@pytest.mark.parametrize("name", list(_POLICIES))
-def test_replay_and_classifier_agree(monkeypatch, name):
-    policy, flags = _POLICIES[name]
-    for key, value in flags.items():
-        monkeypatch.setenv(key, value)
+def test_replay_and_classifier_agree_at_upstream_cut():
     mismatches = [
         (i, findings)
         for i, findings in enumerate(_LISTS)
-        if _replay_verdict(findings, policy) != _classifier_verdict(findings)
+        if _replay_verdict(findings, Policy()) != _classifier_verdict(findings)
     ]
-    assert not mismatches, f"{len(mismatches)} lists disagree under {name}; first: {mismatches[0]}"
-
-
-def test_parity_lists_exercise_every_policy():
-    """Each non-default policy flips some verdicts, so agreement above is not vacuous."""
-    base = [_replay_verdict(f, Policy()) for f in _LISTS]
-    assert 0 < sum(base) < len(_LISTS)
-    for name in ("gate-any", "gate-confirmed", "cap-3"):
-        policy = _POLICIES[name][0]
-        flipped = sum(_replay_verdict(f, policy) != b for f, b in zip(_LISTS, base, strict=True))
-        assert flipped > 0, name
-    any_hits = {i for i, f in enumerate(_LISTS) if _gate_hit(f, _POLICIES["gate-any"][0])}
-    confirmed = {i for i, f in enumerate(_LISTS) if _gate_hit(f, _POLICIES["gate-confirmed"][0])}
-    assert confirmed < any_hits
-
-
-def _finding(rule_id, severity, confidence, file, start_line=1, tags=()):
-    return {
-        "rule_id": rule_id,
-        "severity": severity,
-        "confidence": confidence,
-        "file": file,
-        "start_line": start_line,
-        "tags": list(tags),
-    }
-
-
-def test_tag_and_default_rules_match_classifier():
-    assert UNCONFIRMED_TAG == _score_patches.UNCONFIRMED_TAG
-    assert set(_GATE_RULES) == {"SSD-1", "SSD-2", "SSD-3", "SSD-4", "P2"}
-
-
-@pytest.mark.parametrize("rule_id", ["SSD-10", "P20"])
-def test_exact_gate_entry_is_not_a_prefix(monkeypatch, rule_id):
-    """``SSD-1`` must not gate ``SSD-10``; only an entry ending in ``-`` is a prefix."""
-    monkeypatch.setenv("SKILLSPECTOR_EXA_SEMANTIC_GATE", "any")
-    policy = _POLICIES["gate-any"][0]
-    findings = [_finding(rule_id, "HIGH", 0.3, "tool.py")]
-    assert not _gate_hit(findings, policy)
-    assert not _replay_verdict(findings, policy)
-    assert not _classifier_verdict(findings)
-    # the control: the exact id does gate under the same policy
-    exact = [_finding("SSD-1", "HIGH", 0.3, "tool.py")]
-    assert _gate_hit(exact, policy)
-    assert _classifier_verdict(exact)
-
-
-def test_file_without_metadata_is_never_capped(monkeypatch):
-    """The cap only touches known non-executable files; ``notes.md`` has no metadata row."""
-    monkeypatch.setenv("SKILLSPECTOR_EXA_DOC_MEDIUM_CAP", "0")
-    policy = Policy(doc_medium_cap=0)
-    findings = [_finding(f"R{i}", "MEDIUM", 1.0, "notes.md", i) for i in range(1, 9)]
-    assert _replay_verdict(findings, Policy())  # scored, and blocks, without the cap
-    assert _replay_verdict(findings, policy)
-    assert _classifier_verdict(findings)
-    # the control: the same findings in a known doc are capped away
-    docs = [dict(f, file="README.md") for f in findings]
-    assert not _replay_verdict(docs, policy)
-    assert not _classifier_verdict(docs)
+    assert not mismatches, f"{len(mismatches)} lists disagree; first: {mismatches[0]}"
 
 
 _THRESHOLDS = tuple(range(31, 62, 2))
-# Gate policies cross-checked with every threshold, so a gate hit under T > 51 is covered.
-_THRESHOLD_BASES = ("default", "gate-any")
 
 
-@pytest.mark.parametrize("base", _THRESHOLD_BASES)
 @pytest.mark.parametrize("threshold", _THRESHOLDS)
-def test_replay_and_classifier_agree_on_threshold(monkeypatch, base, threshold):
+def test_replay_and_classifier_agree_on_threshold(monkeypatch, threshold):
     """Verdict, score, band and recommendation agree for every T in the sweep grid."""
-    policy = replace(_POLICIES[base][0], threshold=threshold)
-    for key, value in _POLICIES[base][1].items():
-        monkeypatch.setenv(key, value)
+    policy = Policy(threshold=threshold)
     monkeypatch.setenv("SKILLSPECTOR_EXA_BLOCK_THRESHOLD", str(threshold))
     mismatches = []
     for i, findings in enumerate(_LISTS):
