@@ -10,7 +10,7 @@ from skillspector.graph import create_graph
 from skillspector.inspection_ledger import LedgerReason, analyzer_status_event
 from skillspector.nodes import analyzers
 
-HIDDEN_ID = "exaforce_hidden_text"
+LURE_ID = "exaforce_lure_rules"
 DUMMY_ID = "exaforce_test_dummy"
 
 
@@ -98,19 +98,19 @@ def test_registered_node_disabled_returns_disabled_status(restore_registry):
     assert wrapped({})["analyzer_status_events"] == ["ran"]
 
 
-def test_hidden_text_node_disabled_without_flag(monkeypatch):
-    monkeypatch.delenv("SKILLSPECTOR_EXA_HIDDEN_TEXT", raising=False)
-    response = analyzers.ANALYZER_NODES[HIDDEN_ID]({"components": ["SKILL.md"]})
+def test_lure_node_disabled_by_flag(monkeypatch):
+    monkeypatch.setenv("SKILLSPECTOR_EXA_LURE_RULES", "off")
+    response = analyzers.ANALYZER_NODES[LURE_ID]({"components": ["SKILL.md"]})
     assert response["findings"] == []
     assert response["analyzer_status_events"][0]["status"] == "disabled"
 
 
 def test_graph_includes_registered_node():
-    assert analyzers.ANALYZER_NODE_IDS.count(HIDDEN_ID) == 1
-    assert HIDDEN_ID in _graph_node_ids(create_graph())
+    assert analyzers.ANALYZER_NODE_IDS.count(LURE_ID) == 1
+    assert LURE_ID in _graph_node_ids(create_graph())
     # The graph compiled at package import time (before apply_patches) is rebuilt.
-    assert HIDDEN_ID in _graph_node_ids(sys.modules["skillspector.graph"].graph)
-    assert HIDDEN_ID in _graph_node_ids(skillspector.graph)
+    assert LURE_ID in _graph_node_ids(sys.modules["skillspector.graph"].graph)
+    assert LURE_ID in _graph_node_ids(skillspector.graph)
 
 
 def test_fresh_interpreter_module_graph_has_node(run_in_subprocess):
@@ -118,8 +118,8 @@ def test_fresh_interpreter_module_graph_has_node(run_in_subprocess):
         """
         from skillspector.graph import graph
         from skillspector import cli
-        print("exaforce_hidden_text" in graph.get_graph().nodes)
-        print("exaforce_hidden_text" in cli.graph.get_graph().nodes)
+        print("exaforce_lure_rules" in graph.get_graph().nodes)
+        print("exaforce_lure_rules" in cli.graph.get_graph().nodes)
         """
     )
     assert out.split() == ["True", "True"]

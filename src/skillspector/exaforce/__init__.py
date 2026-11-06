@@ -3,8 +3,8 @@
 
 Keeps fork behavior — pruning unused LLM structured-output keys and prompt text
 to shrink requests and reduce LLM timeouts, trusting the meta-analyzer LLM
-verdict over static severity, and the flag-gated semantic block gate and
-documentation-finding cap on the risk score — out of upstream-tracked source
+verdict over static severity, the block threshold on the risk score, and the
+lure-rule static analyzer — out of upstream-tracked source
 files. All mutations are guarded: an upstream rename/rewrite raises ``PatchDriftError``
 at import time rather than silently going stale.
 """
@@ -12,9 +12,7 @@ at import time rather than silently going stale.
 from __future__ import annotations
 
 from . import (
-    _build_context_patches,
     _filter_patches,
-    _hidden_text,
     _lure_rules,
     _prompt_patches,
     _sampling_patches,
@@ -35,7 +33,5 @@ def apply_patches() -> None:
     _sampling_patches.apply()
     _filter_patches.apply()
     _score_patches.apply()
-    _build_context_patches.apply()
-    _hidden_text.apply()
     _lure_rules.apply()
     _PATCHED = True

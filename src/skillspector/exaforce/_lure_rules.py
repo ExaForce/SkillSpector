@@ -19,7 +19,7 @@ The regex sources are copied verbatim from the offline prototype
 they cannot drift. ``src/`` never imports from ``benchmark/``.
 
 The node runs through upstream ``static_runner``. Finding contexts carry ``CONTEXT_MARKER``, which the
-shared interceptor installed by ``_hidden_text.apply`` exempts from the runner's "looks like a code
+shared interceptor installed by ``_fork_context.apply`` exempts from the runner's "looks like a code
 example" drop. The finding context is the matched line only, so fence lines are never in it; the
 bypass exists because an attacker can append a code-example indicator (``# e.g.``, "such as") to the
 lure line itself in a non-executable file such as ``SKILL.md``, which would otherwise make
@@ -42,8 +42,8 @@ from skillspector.nodes.analyzers import pattern_defaults, static_runner
 from skillspector.nodes.analyzers.pattern_defaults import PatternCategory
 from skillspector.state import AnalyzerNodeResponse, SkillspectorState
 
-from . import _analyzer_registry
-from ._hidden_text import FORK_CONTEXT_PREFIX
+from . import _analyzer_registry, _fork_context
+from ._fork_context import FORK_CONTEXT_PREFIX
 from ._patchlib import PatchDriftError
 
 logger = logging.getLogger(__name__)
@@ -311,10 +311,7 @@ def _register_texts() -> None:
 
 
 def apply() -> None:
-    """Register the EXA-LU texts and the lure analyzer node (idempotent).
-
-    The code-example bypass for ``CONTEXT_MARKER`` is the shared interceptor that
-    ``_hidden_text.apply`` installs unconditionally, so it works with only this flag on.
-    """
+    """Register the EXA-LU texts, the code-example bypass and the lure analyzer node (idempotent)."""
     _register_texts()
+    _fork_context.apply()
     _analyzer_registry.register_analyzer(ANALYZER_ID, node, enabled=_enabled)

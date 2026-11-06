@@ -54,8 +54,8 @@ _NO_FLOOR_REASON = (
 )
 
 _ANALYZER_REGISTRY_REASON = (
-    "exaforce _analyzer_registry appends fork analyzers (exaforce_hidden_text, and "
-    "later P3-P5 nodes) to ANALYZER_NODE_IDS; upstream asserts the fixed upstream list"
+    "exaforce _analyzer_registry appends fork analyzers (exaforce_lure_rules) to "
+    "ANALYZER_NODE_IDS; upstream asserts the fixed upstream list"
 )
 
 _SCHEMA_PRUNING = (
