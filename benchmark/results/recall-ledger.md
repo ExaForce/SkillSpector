@@ -78,18 +78,6 @@ row per run, and one decision block per plan below the table.
 | P6 | smoke | T = 49 | 2 | `2d55e4add55e` | 0b018c65 | `SKILLSPECTOR_EXA_BLOCK_THRESHOLD=49` | 5 | OK | live scores 23 / 61 / 21 / 100 / 58: not reproduced |
 | P6 | replay | T = 49 (final) | - | `da9c7e3e55a2` | 0b018c65 (P6 bands) | `--policy '{"threshold": 49}'` | 12,718 | n/a (replay) | TP 4697 / FP 373; superseded by `60503e65c287` |
 | P6 | replay | T = 49 (final, clamped) | - | `60503e65c287` | 33271de5 | `--policy '{"threshold": 49}'` | 12,718 | n/a (replay) | TP 4697 / FP 373; no score left at 49–50; the report's head run |
-| P7 | probe | default (nemotron-super-3-120b) | 1 | `cc8233ec225d` | 910859ed | none | 5 (probe) | OK | time reference: median 10.9 s |
-| P7 | probe | SSD slot = deepseek.v3.2 | 1 | `f9f1ffd9ce2b` | 910859ed | `SKILLSPECTOR_MODEL_SEMANTIC_SECURITY_DISCOVERY=deepseek.v3.2` | 5 | OK, all calls succeeded | PASS: SSD findings on 3/4 malicious; median 10.7 s (0.98×); off-schema 0/3 |
-| P7 | probe | SSD slot = qwen3-235b-a22b-2507 | 1 | `ab95c2117f31` | 910859ed | `..._SEMANTIC_SECURITY_DISCOVERY=qwen.qwen3-235b-a22b-2507` | 5 | OK, all calls succeeded | PASS: 2/4; 13.5 s (1.24×); off-schema 0/2 |
-| P7 | probe | SSD slot = mistral-large-3-675b | 1 | `d46ae64444b2` | 910859ed | `..._SEMANTIC_SECURITY_DISCOVERY=mistral.mistral-large-3-675b-instruct` | 5 | OK, all calls succeeded | PASS: 4/4; 18.9 s (1.74×); off-schema 0/9 |
-| P7 | dev | control | 1 | `7f54de6438ea` | c6fa968c | none | 1,364 (p7-dev) | OK: dropped 8.8% (120/1364), 0 errors | TP 173.0 / FP 230.5 (mean of r1, r2); N_TP 10, N_FP 5 |
-| P7 | dev | control | 2 | `6822ec3bf3eb` | c6fa968c | none | 1,364 | OK: dropped 8.1% (111/1364), 0 errors | reused by all three screens |
-| P7 | dev | SSD = deepseek.v3.2 | 1 | screen `p7-ds`: 10 batches `4fa60cf4e5b0` .. `811e11367658` | c6fa968c | `..._SEMANTIC_SECURITY_DISCOVERY=deepseek.v3.2` | 1,364 | union OK: dropped 7.4% (101/1364); 1 batch over 10% | screen PASSED, union ΔTP +9 / ΔFP −11.5 |
-| P7 | dev | SSD = deepseek.v3.2 | 2 | `fd442519a30a` | c6fa968c | same | 1,364 | OK | arms ΔTP +13.0 / ΔFP −10.0 -> REJECT (< 20); p95 1.11×, ΔERROR 0; off-schema 0.30% |
-| P7 | dev | SSD = mistral-large-3 | 1 | screen `p7-ml`: 10 batches `9084f8036a80` .. `4ab9f4813acb` | c6fa968c | `..._SEMANTIC_SECURITY_DISCOVERY=mistral.mistral-large-3-675b-instruct` | 1,364 | union OK: dropped 6.8% (93/1364); 1 batch over 10% | screen PASSED, union ΔTP +10 / ΔFP +8.5 |
-| P7 | dev | SSD = mistral-large-3 | 2 | `4892f4b08e30` | c6fa968c | same | 1,364 | OK, 1 error | arms ΔTP +5.5 / ΔFP +2.5 -> REJECT; SSD issues 3× control; p95 0.95×; off-schema 0% |
-| P7 | dev | SSD = qwen3-235b | 1 | `96091f800126` (incomplete) | c6fa968c | `..._SEMANTIC_SECURITY_DISCOVERY=qwen.qwen3-235b-a22b-2507` | 122 of 137 (batch 1) | n/a | harness crash: a non-string issue `explanation` (likely `mcp_tool_poisoning` TP4, not SSD); fixed in `79176a33`; not used |
-| P7 | dev | SSD = qwen3-235b | 1 | screen `p7-qw2`: 10 batches `6a2aba23c12e` .. `248c43c3c49e` | 79176a33 | same | 1,364 | union OK: dropped 8.8% (120/1364); 4 batches over 10% | screen FUTILE (TP) at batch 10: ΔTP +5 / ΔFP −0.5 -> REJECT |
 
 ## P0
 
@@ -657,63 +645,3 @@ holdout +0.0038. Overview: `results/recall-p6-report.md`.
   is the most common HIGH rule among them.
 - **Score pile-up at 50.** Score 50 alone holds 66 units. Find why scores cluster just under 51 (suspect: the
   meta-analyzer-verdict-over-static-severity patch) before any further threshold move.
-
-## P7
-
-Plan: `docs/superpowers/plans/2026-10-29-recall-p7-model-split.md`. It was amended in `910859ed` by a user decision made
-before any probe. Branch `exaforce/recall-p7-model-split`, from P6's final commit `3f0de98f`.
-
-### Probe (Task 1)
-
-- **Target slot:** `SKILLSPECTOR_MODEL_SEMANTIC_SECURITY_DISCOVERY`. P3 and P4 were rolled back, so their per-skill
-  nodes do not exist. The slot is read per scan through `build_model_config()`.
-- **Candidates:**
-  - The endpoint (us-east-2) lists 50 models, but in a different random order on every call, so the plan's
-    "listing order" rule was a random draw.
-  - The user chose the largest open-weight models: `deepseek.v3.2`, `qwen.qwen3-235b-a22b-2507` and
-    `mistral.mistral-large-3-675b-instruct`, with backups `moonshotai.kimi-k2.5` and `zai.glm-5`.
-- **Probe set:** 4 core-dev malicious units that `baseline-v2` caught with a HIGH+ `SSD-*` finding, plus 1 benign core-dev
-  unit (`scratchpad p7-probe.txt`, P7-R2). The same-day default probe gives the time reference.
-- **Result:** all three pass every criterion (health, no dropped calls, `SSD-*` findings on ≥ 2 of 4 malicious units,
-  median time ≤ 3× default), with no off-schema `SSD` rule ids. The backups were not needed. The run rows are above.
-
-### Dev arms (Task 2)
-
-- **Dev set:** `results/evalsets/p7-dev.txt`, `core-dev.txt` ∪ `p1-dev.txt` = 1,364 units (`p1-dev.txt` equals
-  `core-dev.txt`). `splits.tsv` regenerated: unchanged, 4,241 dev / 8,477 holdout.
-- **Controls:** `7f54de6438ea` and `6822ec3bf3eb`, same day, both healthy: TP 173.0 / FP 230.5 on average, so
-  N_TP = 10 and N_FP = 5. A candidate needs ΔTP ≥ 20 to be PROMISING. Neither control's recorded env has a
-  `SKILLSPECTOR_MODEL_*` slot var (Review Focus 3). Every treatment run's env has the slot var set. `arms`' provenance
-  column compares `SKILLSPECTOR_EXA_*` only, so it prints "same as" for the treatments.
-- **Verdicts:**
-
-  | candidate | screen | ΔTP | ΔFP | dev verdict | p95 ratio | ΔERROR | off-schema SSD ids |
-  |---|---|---|---|---|---|---|---|
-  | `deepseek.v3.2` | PASSED | +13.0 | −10.0 | REJECT (< 20) | 1.11× | 0 | 2/659 (0.30%) |
-  | `qwen.qwen3-235b-a22b-2507` | FUTILE (TP), batch 10 | +5 (screen) | −0.5 | REJECT (FUTILE) | 0.89× (rep 1) | 0 | 0/268 |
-  | `mistral.mistral-large-3-675b-instruct` | PASSED | +5.5 | +2.5 | REJECT (< 20) | 0.95× | +0.04 pt | 0/1,352 |
-
-  Every candidate passes the cost guard and the rule_id check, and none is PROMISING. **P7 is REJECTED at the dev
-  stage**, so there are no final full runs and no code (Task 3 skipped).
-- **What the numbers say.** The stronger models add mostly MEDIUM `SSD-*` findings (mistral 405 and 389 against
-  24 and 27), mostly on units already caught. Caught units with a HIGH+ SSD finding rise by about 10 to 13, which
-  matches the TP gain. About 90% of the missed units have no HIGH+ SSD finding in any arm. Missed units with one: 26
-  and 23 in the control, 21 and 17 for deepseek, 24 and 11 for mistral, 35 for qwen. So the limit is detection on
-  the missed units, not the scoring cap.
-- **Qwen re-run (P7-R6).** The first qwen screen crashed in batch 1: one issue's `explanation` was an object, and
-  `db.record_result` sliced it. `79176a33` stores a non-string explanation as JSON. The screen was re-run as `p7-qw2`
-  against the same controls, at a tree that differs from theirs only in that harness file. The re-run produced no
-  non-string explanations.
-  - Correction (final review I1): this was not an SSD finding. The fork's schema patch removes `explanation` from
-    SSD findings. The likely source is `mcp_tool_poisoning` TP4 on the default model, so any arm could have hit it.
-- **Health of qwen's screen (P7-R7).** 4 of its 10 batches drop calls in slightly over 10% of scans (10.3–11.7%).
-  Judged as one union replicate, as `health` does for screens, it is 8.8% (120/1,364), identical to control r1's 120.
-  The dropped scans include 17 FN, against 17 and 16 in the controls, so the drops do not bias the verdict.
-
-### Decision
-
-- **P7 REJECTED at the dev stage** (2026-11-05). No candidate was PROMISING: deepseek ΔTP +13.0 / ΔFP −10.0, mistral
-  +5.5 / +2.5, qwen FUTILE (+5 / −0.5), against a bar of ΔTP ≥ 20. No final full runs, no `_model_defaults.py`, and no
-  default changed (P7-R8).
-- **Reports:** `results/recall-p7-report.md` (dev-rejection format; the spec's two `report` commands need full runs)
-  and `results/recall-program-summary.md`. The program summary's head is P6's `60503e65c287`.
